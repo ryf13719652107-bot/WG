@@ -17,11 +17,12 @@ from .log_service import strategy_log_service
 from .grid_engine import GridStrategyEngine
 from .grid_executor import GridExecutor
 from .price_stream import price_stream
+from .health_monitor import health_monitor
 
 logger = logging.getLogger(__name__)
 
-_STRATEGY_TICK_SECONDS = 30  # fixed internal execution interval
-_STRATEGY_SEMAPHORE = asyncio.Semaphore(20)
+_STRATEGY_TICK_SECONDS = 30
+_STRATEGY_SEMAPHORE = asyncio.Semaphore(100)
 
 
 class StrategyScheduler:
@@ -53,7 +54,7 @@ class StrategyScheduler:
             self._engines[s.id] = GridStrategyEngine(s)
             self._executors[s.id] = GridExecutor(self._engines[s.id])
             strategy_log_service.info(s.id, "后端已重启：已恢复调度任务")
-            logger.info("Resumed scheduler for strategy %d (%s)", s.id, s.name)
+            logger.info("Resumed scheduler for strategy %d (%s %s)", s.id, s.symbol, s.direction)
 
         # Subscribe to price feeds for all resumed strategies' symbols
         await self._start_price_stream()
@@ -136,8 +137,8 @@ class StrategyScheduler:
         strategy.started_at = now_beijing()
         await session.commit()
         await session.refresh(strategy)
-        logger.info("Strategy %d (%s) started", strategy_id, strategy.name)
-        strategy_log_service.success(strategy_id, f"策略启动 — {strategy.name}")
+        logger.info("Strategy %d (%s %s) started", strategy_id, strategy.symbol, strategy.direction)
+        strategy_log_service.success(strategy_id, f"策略启动 — {strategy.symbol} {strategy.direction}")
         return True
 
     async def remove_strategy(self, strategy_id: int):
@@ -220,12 +221,13 @@ class StrategyScheduler:
                 await executor.process_symbol(
                     session, strategy, strategy.symbol, exchange, current_price,
                 )
-                # Cleanup old filled/canceled orders to prevent memory leak
                 from .order_tracker import order_tracker
                 order_tracker.remove_done(strategy_id, min_age_seconds=3600)
+                health_monitor.record_success(strategy_id)
             except Exception as e:
                 logger.error("Strategy %d: processing error: %s", strategy_id, e)
                 strategy_log_service.error(strategy_id, f"执行错误 — {e}")
+                health_monitor.record_failure(strategy_id, str(e))
                 await session.rollback()
 
 

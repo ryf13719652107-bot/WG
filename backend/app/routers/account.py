@@ -80,8 +80,8 @@ async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Strategy).where(Strategy.account_id == account_id))
     existing = result.scalars().all()
     if existing:
-        names = ", ".join(s.name for s in existing)
-        raise HTTPException(status_code=400, detail=f"该账户下还有策略，请先删除策略：{names}")
+        labels = ", ".join(f"{s.symbol}({s.direction})" for s in existing)
+        raise HTTPException(status_code=400, detail=f"该账户下还有策略，请先删除策略：{labels}")
 
     await db.delete(account)
     await db.commit()

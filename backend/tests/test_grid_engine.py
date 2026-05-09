@@ -1,0 +1,118 @@
+import pytest
+from app.services.grid_engine import GridStrategyEngine, GridLevel
+
+
+class MockStrategy:
+    def __init__(self, **kwargs):
+        self.base_qty_value = kwargs.get("base_qty_value", 1.0)
+        self.base_qty_type = kwargs.get("base_qty_type", "usdt")
+        self.tp_pct = kwargs.get("tp_pct", 1.0)
+        self.grid_drop_base_pct = kwargs.get("grid_drop_base_pct", 1.0)
+        self.grid_interval_multiplier = kwargs.get("grid_interval_multiplier", 1.5)
+        self.position_multiplier = kwargs.get("position_multiplier", 1.5)
+        self.max_layers = kwargs.get("max_layers", 8)
+        self.cumulative_loss_threshold_u = kwargs.get("cumulative_loss_threshold_u", 0.0)
+        self.leverage = kwargs.get("leverage", 20)
+
+
+def test_calculate_grid_levels_long():
+    s = MockStrategy(grid_drop_base_pct=1.0, grid_interval_multiplier=1.5, position_multiplier=1.5, max_layers=4)
+    eng = GridStrategyEngine(s)
+    levels = eng.calculate_grid_levels(100.0, "long")
+
+    assert len(levels) == 3
+    assert levels[0].level == 1
+    assert levels[0].trigger_price == pytest.approx(99.0, abs=0.01)
+    assert levels[0].quantity == pytest.approx(1.5, abs=0.01)
+    assert levels[0].drop_pct == pytest.approx(1.0, abs=0.01)
+
+    assert levels[1].level == 2
+    assert levels[1].trigger_price == pytest.approx(97.5, abs=0.01)
+    assert levels[1].quantity == pytest.approx(2.25, abs=0.01)
+    assert levels[1].drop_pct == pytest.approx(2.5, abs=0.01)
+
+    assert levels[2].level == 3
+    assert levels[2].trigger_price == pytest.approx(95.25, abs=0.01)
+    assert levels[2].quantity == pytest.approx(3.375, abs=0.01)
+    assert levels[2].drop_pct == pytest.approx(4.75, abs=0.01)
+
+
+def test_calculate_grid_levels_short():
+    s = MockStrategy(grid_drop_base_pct=1.0, grid_interval_multiplier=1.5, max_layers=3)
+    eng = GridStrategyEngine(s)
+    levels = eng.calculate_grid_levels(100.0, "short")
+
+    assert len(levels) == 2
+    assert levels[0].trigger_price == pytest.approx(101.0, abs=0.01)
+    assert levels[1].trigger_price == pytest.approx(102.5, abs=0.01)
+
+
+def test_calculate_position_size():
+    s = MockStrategy(base_qty_value=10.0, position_multiplier=1.5)
+    eng = GridStrategyEngine(s)
+    assert eng.calculate_position_size(0) == 10.0
+    assert eng.calculate_position_size(1) == 15.0
+    assert eng.calculate_position_size(2) == 22.5
+    assert eng.calculate_position_size(3) == 33.75
+
+
+def test_calculate_tp_price():
+    s = MockStrategy(tp_pct=1.0)
+    eng = GridStrategyEngine(s)
+    assert eng.calculate_tp_price(100.0, "long") == pytest.approx(101.0, abs=0.01)
+    assert eng.calculate_tp_price(100.0, "short") == pytest.approx(99.0, abs=0.01)
+
+
+def test_calculate_avg_entry():
+    s = MockStrategy()
+    eng = GridStrategyEngine(s)
+
+    class Pos:
+        def __init__(self, qty, price):
+            self.quantity = qty
+            self.entry_price = price
+
+    positions = [Pos(1.0, 100.0), Pos(1.5, 99.0), Pos(2.25, 97.5)]
+    avg = eng.calculate_avg_entry(positions)
+    expected = (100.0 + 148.5 + 219.375) / (1.0 + 1.5 + 2.25)
+    assert avg == pytest.approx(expected, abs=0.01)
+
+
+def test_calculate_cumulative_loss_long():
+    s = MockStrategy()
+    eng = GridStrategyEngine(s)
+
+    class Pos:
+        def __init__(self, qty, price, side):
+            self.quantity = qty
+            self.entry_price = price
+            self.side = side
+
+    positions = [Pos(1.0, 100.0, "long"), Pos(1.5, 99.0, "long")]
+    loss = eng.calculate_cumulative_loss(positions, 98.0)
+    expected = (98.0 - 100.0) * 1.0 + (98.0 - 99.0) * 1.5
+    assert loss == pytest.approx(expected, abs=0.01)
+    assert loss < 0
+
+
+def test_should_stop_loss():
+    s = MockStrategy(cumulative_loss_threshold_u=50.0)
+    eng = GridStrategyEngine(s)
+    assert eng.should_stop_loss(-60.0) is True
+    assert eng.should_stop_loss(-40.0) is False
+    assert eng.should_stop_loss(10.0) is False
+
+    s2 = MockStrategy(cumulative_loss_threshold_u=0.0)
+    eng2 = GridStrategyEngine(s2)
+    assert eng2.should_stop_loss(-100.0) is False
+
+
+def test_get_next_grid_add():
+    s = MockStrategy(max_layers=5)
+    eng = GridStrategyEngine(s)
+    gl = eng.get_next_grid_add(100.0, 0, "long")
+    assert gl is not None
+    assert gl.level == 1
+
+    gl2 = eng.get_next_grid_add(100.0, 4, "long")
+    assert gl2 is None

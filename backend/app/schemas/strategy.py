@@ -5,7 +5,6 @@ from typing import Optional, Literal
 
 class StrategyCreate(BaseModel):
     account_id: int
-    name: str = Field(min_length=1, max_length=100)
     direction: Literal["long", "short"]
     symbol: str = Field(min_length=1, max_length=50)
     # Entry
@@ -23,7 +22,6 @@ class StrategyCreate(BaseModel):
 
 
 class StrategyUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     base_qty_type: Optional[Literal["margin_pct", "usdt"]] = None
     base_qty_value: Optional[float] = Field(default=None, gt=0)
     max_layers: Optional[int] = Field(default=None, ge=1, le=50)
@@ -39,7 +37,6 @@ class StrategyUpdate(BaseModel):
 class StrategyResponse(BaseModel):
     id: int
     account_id: int
-    name: str
     direction: str
     symbol: str
     base_qty_type: str

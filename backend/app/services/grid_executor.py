@@ -7,6 +7,8 @@ from ..models.position import Position
 from ..models.trade import Trade
 from .grid_engine import GridStrategyEngine, GridLevel
 from .order_tracker import order_tracker, OrderState
+from .stop_loss_manager import StopLossManager, StopLossLevel
+from .log_service import strategy_log_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +21,15 @@ class GridExecutor:
     2. Has positions → check TP fills / grid add fills / stop loss
     3. TP fill → close all + reopen initial
     4. Grid add fill → update avg entry + replace TP + place next grid add
-    5. Stop loss hit → close all + reopen initial (with cooldown)
+    5. Stop loss:
+       - SOFT (80% threshold): alert only, continue trading
+       - HARD (100% threshold): close all + reopen initial
+       - PANIC (single layer >50% loss): close all + reopen initial
     """
 
     def __init__(self, engine: GridStrategyEngine):
         self.engine = engine
+        self.sl_manager = StopLossManager(threshold_u=engine.loss_threshold)
 
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
@@ -43,13 +49,24 @@ class GridExecutor:
             await self._open_initial(session, strategy, symbol, exchange, current_price)
             return
 
-        # Update mark prices
+        # Update mark prices and calculate cumulative unrealized PnL
+        cumulative_u = 0.0
         for pos in open_positions:
             pos.mark_price = current_price
             if pos.side == "long":
                 pos.unrealized_pnl = (current_price - pos.entry_price) * pos.quantity
             else:
                 pos.unrealized_pnl = (pos.entry_price - current_price) * pos.quantity
+            cumulative_u += pos.unrealized_pnl
+
+        if self.engine.loss_threshold > 0:
+            strategy_log_service.info(
+                strategy.id,
+                f"浮亏监控: 累计 {cumulative_u:.2f}U / 阈值 {self.engine.loss_threshold:.2f}U "
+                f"({abs(cumulative_u) / self.engine.loss_threshold * 100:.0f}%)"
+                if cumulative_u < 0 else
+                f"浮盈监控: 累计 {cumulative_u:.2f}U",
+            )
 
         # Check TP order fills
         tp_filled = await self._check_tp_fills(session, strategy, symbol, exchange, open_positions, current_price)
@@ -282,19 +299,55 @@ class GridExecutor:
                     logger.debug("Cancel TP order %s: %s", o.order_id, e)
 
     async def _check_stop_loss(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
-        """Check cumulative U loss stop loss. Close all if triggered."""
+        """Check per-strategy cumulative unrealized loss with multi-level stop loss.
+
+        Calculates total floating PnL across all layers of this strategy.
+        SOFT (80%): alert only
+        HARD (100%): close all + reopen
+        PANIC (single layer >50% loss): close all + reopen
+        """
         cumulative_u = self.engine.calculate_cumulative_loss(positions, current_price)
-        if not self.engine.should_stop_loss(cumulative_u):
+
+        decision = self.sl_manager.evaluate(cumulative_u, positions, current_price)
+
+        if decision.level == StopLossLevel.NONE:
             return False
 
-        logger.warning(
-            "STOP LOSS: strategy=%d %s cumulative_u=%.2f threshold=%.2f",
-            strategy.id, symbol, cumulative_u, self.engine.loss_threshold,
-        )
+        if decision.level == StopLossLevel.SOFT:
+            logger.warning(
+                "SL SOFT: strategy=%d %s cumulative_u=%.2f threshold=%.2f",
+                strategy.id, symbol, cumulative_u, self.engine.loss_threshold,
+            )
+            strategy_log_service.warning(
+                strategy.id,
+                f"止损预警: 累计浮亏 {abs(cumulative_u):.2f}U (阈值 {self.engine.loss_threshold:.2f}U 的80%)",
+            )
+            return False
 
-        await self._close_all(session, strategy, symbol, exchange, positions, current_price, "stop_loss")
+        close_reason = "stop_loss"
+        if decision.level == StopLossLevel.PANIC:
+            close_reason = "panic_loss"
+            layer = decision.affected_layer
+            logger.warning(
+                "SL PANIC: strategy=%d %s layer=%d single loss >50%% entry value",
+                strategy.id, symbol, layer,
+            )
+            strategy_log_service.error(
+                strategy.id,
+                f"恐慌止损: 第{layer}层单层亏损超50%，立即平仓",
+            )
+        else:
+            logger.warning(
+                "SL HARD: strategy=%d %s cumulative_u=%.2f threshold=%.2f",
+                strategy.id, symbol, cumulative_u, self.engine.loss_threshold,
+            )
+            strategy_log_service.error(
+                strategy.id,
+                f"硬止损触发: 累计浮亏 {abs(cumulative_u):.2f}U 达到阈值 {self.engine.loss_threshold:.2f}U",
+            )
 
-        # Reopen initial if configured; otherwise stop the strategy
+        await self._close_all(session, strategy, symbol, exchange, positions, current_price, close_reason)
+
         if strategy.reopen_after_close:
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:

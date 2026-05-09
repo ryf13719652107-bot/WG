@@ -1,7 +1,6 @@
 export interface Strategy {
   id: number;
   account_id: number;
-  name: string;
   direction: 'long' | 'short';
   symbol: string;
   base_qty_type: 'margin_pct' | 'usdt';
@@ -22,7 +21,6 @@ export interface Strategy {
 
 export interface StrategyFormData {
   account_id: number;
-  name: string;
   direction: 'long' | 'short';
   symbol: string;
   base_qty_type: 'margin_pct' | 'usdt';

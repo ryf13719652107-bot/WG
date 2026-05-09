@@ -88,7 +88,7 @@ export default function StrategyDetailPage() {
         <Link to="/strategies" className="text-gray-400 hover:text-white transition-colors">
           <ArrowLeft size={20} />
         </Link>
-        <h2 className="text-xl font-bold">{strategy.name}</h2>
+        <h2 className="text-xl font-bold">{strategy.symbol}</h2>
         <span className={`text-xs px-2 py-0.5 rounded ${
           strategy.direction === 'long' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'
         }`}>

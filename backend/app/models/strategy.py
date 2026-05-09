@@ -15,9 +15,8 @@ class Strategy(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    direction: Mapped[str] = mapped_column(String(10), nullable=False)  # 'long' or 'short'
-    symbol: Mapped[str] = mapped_column(String(50), nullable=False)  # required — no more coin pool
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Entry position params
     base_qty_type: Mapped[str] = mapped_column(String(20), default="margin_pct")  # 'margin_pct' or 'usdt'

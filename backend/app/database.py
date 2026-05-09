@@ -69,4 +69,27 @@ async def init_db():
             try:
                 await conn.run_sync(lambda c, s=sql: c.exec_driver_sql(s))
             except Exception:
-                pass  # column already exists
+                pass
+
+        # Drop legacy columns no longer in the model (SQLite 3.35+)
+        legacy_drops = [
+            ("strategies", "timeframe"),
+            ("strategies", "margin_threshold"),
+            ("strategies", "signal_source"),
+            ("strategies", "wt_channel_length"),
+            ("strategies", "wt_average_length"),
+            ("strategies", "martingale_rsi_enabled"),
+            ("strategies", "coin_pool_top_n"),
+            ("strategies", "exclude_tradefi"),
+            ("strategies", "name"),
+        ]
+        from sqlalchemy import inspect as sa_inspect
+        for table, column in legacy_drops:
+            try:
+                def _drop_col(c, t=table, col=column):
+                    existing = [r[1] for r in c.execute(f"PRAGMA table_info({t})").fetchall()]
+                    if col in existing:
+                        c.exec_driver_sql(f"ALTER TABLE {t} DROP COLUMN {col}")
+                await conn.run_sync(_drop_col)
+            except Exception:
+                pass

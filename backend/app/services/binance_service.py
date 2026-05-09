@@ -264,10 +264,6 @@ class BinanceService(BaseExchangeService):
         formatted = [self._format_symbol(s) for s in symbols] if symbols else None
         return await self.ws_exchange.watch_tickers(formatted)
 
-    async def watch_klines(self, symbol: str, timeframe: str = "1m"):
-        """K-line WebSocket stream. Deprecated for grid strategy but kept for compatibility."""
-        return await self.ws_exchange.watch_ohlcv(self._format_symbol(symbol), timeframe)
-
     # ---- Lifecycle ----
 
     async def close(self):

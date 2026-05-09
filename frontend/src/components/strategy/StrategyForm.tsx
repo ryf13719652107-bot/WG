@@ -8,7 +8,6 @@ import type { Account } from '../../types';
 
 const schema = z.object({
   account_id: z.number().min(1, '请选择账户'),
-  name: z.string().min(1, '请输入策略名称').max(100),
   direction: z.enum(['long', 'short']),
   symbol: z.string().min(1, '请选择交易对'),
   base_qty_type: z.enum(['margin_pct', 'usdt']),
@@ -30,28 +29,9 @@ interface Props {
   onCancel: () => void;
 }
 
-function toFormDefaults(initialData: Strategy | null, accounts: Account[]): StrategyFormData {
-  if (initialData) {
-    return {
-      account_id: initialData.account_id,
-      name: initialData.name,
-      direction: initialData.direction,
-      symbol: initialData.symbol,
-      base_qty_type: initialData.base_qty_type,
-      base_qty_value: initialData.base_qty_value,
-      max_layers: initialData.max_layers,
-      leverage: initialData.leverage,
-      tp_pct: initialData.tp_pct ?? 1,
-      grid_drop_base_pct: initialData.grid_drop_base_pct ?? 1,
-      grid_interval_multiplier: initialData.grid_interval_multiplier ?? 1.5,
-      position_multiplier: initialData.position_multiplier ?? 1.5,
-      cumulative_loss_threshold_u: initialData.cumulative_loss_threshold_u ?? 0,
-      reopen_after_close: initialData.reopen_after_close ?? true,
-    };
-  }
+function toFormDefaults(accounts: Account[]): StrategyFormData {
   return {
     account_id: accounts[0]?.id || 0,
-    name: '',
     direction: 'long',
     symbol: '',
     base_qty_type: 'margin_pct',
@@ -70,7 +50,7 @@ function toFormDefaults(initialData: Strategy | null, accounts: Account[]): Stra
 export default function StrategyForm({ accounts, initialData, onSubmit, onCancel }: Props) {
   const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<StrategyFormData>({
     resolver: zodResolver(schema),
-    defaultValues: toFormDefaults(initialData, accounts),
+    defaultValues: toFormDefaults(accounts),
   });
 
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -83,14 +63,12 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
   const selectedSymbol = watch('symbol');
   const direction = watch('direction');
 
-  // Fetch available symbols when account/exchange changes
   useEffect(() => {
     const acct = accounts.find(a => a.id === selectedAccountId);
     const ex = (acct as any)?.exchange || 'binance';
     api.getMarkets(ex).then(r => setSymbols(r.symbols)).catch(() => {});
   }, [selectedAccountId, accounts]);
 
-  // Fetch strategy counts when account changes
   useEffect(() => {
     if (selectedAccountId) {
       api.getStrategyCounts(selectedAccountId).then(r => {
@@ -100,28 +78,19 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
     }
   }, [selectedAccountId]);
 
-  // Filter symbols by search, exclude those with 2 strategies already
   const filteredSymbols = useMemo(() => {
     const q = search.toUpperCase();
     return symbols.filter(sym => {
       if (q && !sym.includes(q)) return false;
-      // Editing: allow currently selected symbol
-      if (initialData && sym === initialData.symbol) return true;
       const count = strategyCounts[sym] || 0;
       if (count >= 2) return false;
-      // If count === 1 and direction already used, exclude
       if (count === 1) {
         const dirs = strategyDirs[sym] || [];
         if (dirs.includes(direction)) return false;
       }
       return true;
     });
-  }, [symbols, search, strategyCounts, strategyDirs, direction, initialData]);
-
-  // Sync initial symbol search text
-  useEffect(() => {
-    if (initialData?.symbol) setSearch(initialData.symbol);
-  }, [initialData]);
+  }, [symbols, search, strategyCounts, strategyDirs, direction]);
 
   const inputClass = 'w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none';
   const labelClass = 'block text-xs text-gray-400 mb-0.5';
@@ -129,22 +98,15 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-      <h3 className="font-semibold mb-4">{initialData ? '编辑策略' : '新建策略'}</h3>
+      <h3 className="font-semibold mb-4">新建策略</h3>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         <div className="grid grid-cols-3 gap-3">
-          {!initialData && (
-            <div>
-              <label className={labelClass}>交易账户</label>
-              <select {...register('account_id', { valueAsNumber: true })} className={inputClass}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({(a as any).exchange || 'binance'}) {a.testnet ? '(测试网)' : '(实盘)'}</option>)}
-              </select>
-              {errors.account_id && <p className={errorClass}>{errors.account_id.message}</p>}
-            </div>
-          )}
           <div>
-            <label className={labelClass}>策略名称</label>
-            <input {...register('name')} className={inputClass} placeholder="输入策略名称" />
-            {errors.name && <p className={errorClass}>{errors.name.message}</p>}
+            <label className={labelClass}>交易账户</label>
+            <select {...register('account_id', { valueAsNumber: true })} className={inputClass}>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({(a as any).exchange || 'binance'}) {a.testnet ? '(测试网)' : '(实盘)'}</option>)}
+            </select>
+            {errors.account_id && <p className={errorClass}>{errors.account_id.message}</p>}
           </div>
           <div>
             <label className={labelClass}>交易方向</label>
@@ -153,9 +115,6 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
               <option value="short">做空</option>
             </select>
           </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3">
           <div className="relative">
             <label className={labelClass}>
               交易对
@@ -175,7 +134,6 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
             {showDropdown && (
               <div className="absolute z-50 w-full mt-0.5 max-h-48 overflow-y-auto bg-gray-800 border border-gray-700 rounded shadow-lg">
                 {filteredSymbols.slice(0, 100).map(sym => {
-                  const cnt = strategyCounts[sym] || 0;
                   const dirs = strategyDirs[sym] || [];
                   const takenLong = dirs.includes('long');
                   const takenShort = dirs.includes('short');
@@ -286,9 +244,7 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onCancel} className="px-4 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg">取消</button>
-          <button type="submit" className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 rounded-lg font-medium">
-            {initialData ? '保存修改' : '创建策略'}
-          </button>
+          <button type="submit" className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 rounded-lg font-medium">创建策略</button>
         </div>
       </form>
     </div>

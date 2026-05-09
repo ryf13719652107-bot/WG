@@ -1,3 +1,4 @@
+import time
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -320,3 +321,18 @@ async def get_exchange_positions(strategy_id: int, db: AsyncSession = Depends(ge
 async def get_strategy_logs(strategy_id: int, limit: int = 50):
     from ..services.log_service import strategy_log_service
     return strategy_log_service.get(strategy_id, limit)
+
+
+@router.get("/{strategy_id}/health")
+async def get_strategy_health(strategy_id: int):
+    from ..services.health_monitor import health_monitor
+    h = health_monitor.get_health(strategy_id)
+    return {
+        "strategy_id": strategy_id,
+        "status": h.status.value,
+        "consecutive_failures": h.consecutive_failures,
+        "last_successful_tick_age": round(time.time() - h.last_successful_tick, 1),
+        "last_order_latency_ms": round(h.last_order_latency_ms, 1),
+        "checks": h.checks,
+        "messages": h.messages[-10:],
+    }
