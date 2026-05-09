@@ -5,10 +5,8 @@ from datetime import datetime
 from ..database import get_db
 from ..config import now_beijing
 from ..models.position import Position
-from ..models.account import Account
 from ..schemas.position import PositionResponse
-from ..services.encryption import decrypt
-from ..services.binance_service import get_binance_service
+from ..services.exchange_factory import get_exchange_service
 
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 
@@ -48,22 +46,18 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
     if not position or position.closed_at:
         raise HTTPException(status_code=404, detail="Position not found or already closed")
 
-    account = await db.get(Account, position.account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    api_key = decrypt(account.api_key_encrypted)
-    api_secret = decrypt(account.api_secret_encrypted)
-    binance = await get_binance_service(api_key, api_secret, account.testnet, account.hedge_mode)
+    exchange = await get_exchange_service(position.account_id)
+    if not exchange:
+        raise HTTPException(status_code=404, detail="Exchange service not available")
 
     # Cancel existing TP limit order before closing
     if position.tp_limit_order_id:
         try:
-            await binance.cancel_order(position.tp_limit_order_id, position.symbol)
+            await exchange.cancel_order(position.tp_limit_order_id, position.symbol)
         except Exception:
             pass
 
-    result = await binance.close_position(position.symbol, position.side)
+    result = await exchange.close_position(position.symbol, position.side)
     if not result or not result.get("id"):
         raise HTTPException(status_code=500, detail="Exchange did not confirm the close order")
 
@@ -85,6 +79,7 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
         entry_time=position.opened_at or now_beijing(),
         exit_time=now_beijing(),
         layer=position.layer,
+        grid_level=getattr(position, 'grid_level', 0),
         close_reason="manual",
     )
     db.add(trade)

@@ -1,17 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 from ..database import get_db
 from ..models.strategy import Strategy
 from ..models.position import Position
 from ..schemas.strategy import StrategyCreate, StrategyUpdate, StrategyResponse
 from ..services.scheduler import strategy_scheduler
+from ..services.exchange_factory import get_exchange_service, clear_all_cache
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
 
 def _panic_symbol_key(sym: str) -> str:
-    return (sym or "").replace("/", "").replace(":USDT", "").upper()
+    return (sym or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper()
+
+
+def _norm_sym(s: str) -> str:
+    return (s or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper().strip()
 
 
 @router.post("", response_model=StrategyResponse)
@@ -20,6 +26,30 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
     account = await db.get(Account, data.account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # Constraint: max 2 strategies per symbol (one long + one short)
+    norm_sym = _norm_sym(data.symbol)
+    result = await db.execute(
+        select(Strategy).where(
+            Strategy.account_id == data.account_id,
+            Strategy.symbol.is_not(None),
+        )
+    )
+    existing = result.scalars().all()
+    same_sym = [s for s in existing if _norm_sym(s.symbol or "") == norm_sym]
+    if len(same_sym) >= 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"币种 {data.symbol} 已有 2 个策略（一多一空），不可再创建",
+        )
+    # Check direction conflict
+    for s in same_sym:
+        if s.direction == data.direction:
+            raise HTTPException(
+                status_code=400,
+                detail=f"币种 {data.symbol} 已存在同方向策略（ID={s.id}），每币种只允许一多一空",
+            )
+
     strategy = Strategy(**data.model_dump())
     db.add(strategy)
     await db.commit()
@@ -28,12 +58,19 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
 
 
 @router.get("", response_model=list[StrategyResponse])
-async def list_strategies(status: str | None = None, account_id: int | None = None, db: AsyncSession = Depends(get_db)):
+async def list_strategies(
+    status: Optional[str] = None,
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
     stmt = select(Strategy)
     if status:
         stmt = stmt.where(Strategy.status == status)
     if account_id is not None:
         stmt = stmt.where(Strategy.account_id == account_id)
+    if symbol:
+        stmt = stmt.where(Strategy.symbol == symbol)
     result = await db.execute(stmt)
     return [StrategyResponse.model_validate(s) for s in result.scalars().all()]
 
@@ -87,22 +124,6 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    from ..services.coin_pool_service import coin_pool_service
-    from ..services.binance_service import get_public_binance
-
-    # Ensure coin pool fetches enough symbols to cover this strategy's top_n
-    current_max = coin_pool_service.config.get("max_symbols", 30)
-    if strategy.coin_pool_top_n > current_max:
-        coin_pool_service.update_config(max_symbols=strategy.coin_pool_top_n)
-
-    # Immediate coin pool refresh if configured
-    if strategy.use_coin_pool and strategy.coin_pool_fetch_mode == "immediate":
-        try:
-            public_binance = await get_public_binance()
-            await coin_pool_service.refresh_pool(public_binance)
-        except Exception:
-            pass
-
     await strategy_scheduler.add_strategy(strategy_id, session=db)
     return {"status": "running", "id": strategy_id}
 
@@ -113,7 +134,6 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
     await strategy_scheduler.remove_strategy(strategy_id)
-    # remove_strategy sets status in its own session; refresh and commit here too for consistency
     await db.refresh(strategy)
     await db.commit()
     return {"status": "stopped", "id": strategy_id}
@@ -122,8 +142,6 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/{strategy_id}/panic-close")
 async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     """Emergency close: close ALL exchange positions for this strategy's account at market price."""
-    from ..services.binance_service import get_binance_service
-    from ..services.encryption import decrypt
     from ..models.account import Account
     from ..models.trade import Trade
     from ..config import now_beijing
@@ -133,35 +151,28 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    account = await db.get(Account, strategy.account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
+    exchange = await get_exchange_service(strategy.account_id)
+    if not exchange:
+        raise HTTPException(status_code=404, detail="Exchange service not available")
 
-    api_key = decrypt(account.api_key_encrypted)
-    api_secret = decrypt(account.api_secret_encrypted)
-    binance = await get_binance_service(api_key, api_secret, account.testnet, account.hedge_mode)
-
-    # Get ALL exchange positions — emergency close must close everything
     try:
-        raw_positions = await binance.fetch_positions()
+        raw_positions = await exchange.fetch_positions()
     except Exception as e:
         logging.error("Panic close: fetch_positions failed: %s", e)
         raise HTTPException(status_code=502, detail=f"无法获取交易所持仓: {e}")
 
-    # Build map of (symbol, side) → exchange contracts (all positions)
     exchange_map: dict[tuple[str, str], float] = {}
     for ep in raw_positions:
         contracts = float(ep.get("contracts", 0) or 0)
         if contracts <= 0:
             continue
-        sym = (ep.get("symbol") or "").replace("/", "").replace(":USDT", "")
+        sym = (ep.get("symbol") or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "")
         sd = (ep.get("side") or "").lower()
         exchange_map[(sym, sd)] = exchange_map.get((sym, sd), 0) + contracts
 
     if not exchange_map:
-        # Exchange already flat — still close any ghost open rows in DB for this account
         stmt_ling = select(Position).where(
-            Position.account_id == account.id,
+            Position.account_id == strategy.account_id,
             Position.closed_at.is_(None),
         )
         lingering = list((await db.execute(stmt_ling)).scalars().all())
@@ -175,7 +186,7 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
             pct = ((ep - p.entry_price) / p.entry_price * 100) if p.side == "long" and p.entry_price > 0 else ((p.entry_price - ep) / p.entry_price * 100) if p.entry_price > 0 else 0
             trade = Trade(
                 strategy_id=p.strategy_id,
-                account_id=account.id,
+                account_id=strategy.account_id,
                 symbol=p.symbol,
                 side=p.side,
                 quantity=p.quantity,
@@ -186,6 +197,7 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
                 entry_time=p.opened_at or now0,
                 exit_time=now0,
                 layer=p.layer,
+                grid_level=p.grid_level if hasattr(p, 'grid_level') else 0,
                 close_reason="panic_close",
             )
             db.add(trade)
@@ -193,34 +205,24 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
         if lingering:
             await db.commit()
         await strategy_scheduler.remove_strategy(strategy_id)
-        return {
-            "closed": 0,
-            "failed": 0,
-            "results": [],
-            "id": strategy_id,
-            "db_cleaned": len(lingering),
-        }
+        return {"closed": 0, "failed": 0, "results": [], "id": strategy_id, "db_cleaned": len(lingering)}
 
     results = []
     now = now_beijing()
 
-    # Close each exchange position
     for (symbol, side), contracts in exchange_map.items():
         close_side = "sell" if side == "long" else "buy"
         ps = "LONG" if side == "long" else "SHORT"
         try:
-            order = await binance.create_market_order(
-                symbol, close_side, contracts,
-                reduce_only=True, position_side=ps,
+            order = await exchange.create_market_order(
+                symbol, close_side, contracts, reduce_only=True, position_side=ps,
             )
         except Exception as e1:
             err_str = str(e1)
             if "-1106" in err_str:
-                # reduceOnly rejected — retry with positionSide only, no reduceOnly
                 try:
-                    order = await binance.create_market_order(
-                        symbol, close_side, contracts,
-                        reduce_only=False, position_side=ps,
+                    order = await exchange.create_market_order(
+                        symbol, close_side, contracts, reduce_only=False, position_side=ps,
                     )
                 except Exception as e2:
                     results.append({"symbol": symbol, "side": side, "status": "failed", "error": str(e2)})
@@ -232,36 +234,33 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
                 continue
         exit_price = float(order.get("average", 0) or order.get("price", 0) or 0)
         results.append({"symbol": symbol, "side": side, "status": "ok", "exit_price": exit_price})
-        logging.info("Panic close: closed %s %s contracts=%.4f", symbol, side, contracts)
 
-    # Match ALL account DB rows for each closed (symbol, side) — not only this strategy_id
     for r in results:
         if r["status"] != "ok":
             continue
         symbol = r["symbol"]
         side = r["side"]
-        exit_price = r.get("exit_price", 0) or 0
+        exit_price_v = r.get("exit_price", 0) or 0
         stmt_open = select(Position).where(
-            Position.account_id == account.id,
+            Position.account_id == strategy.account_id,
             Position.closed_at.is_(None),
         )
         open_rows = list((await db.execute(stmt_open)).scalars().all())
         sym_u = _panic_symbol_key(symbol)
-        matching = [
-            p for p in open_rows
-            if _panic_symbol_key(p.symbol) == sym_u and p.side.lower() == side.lower()
-        ]
+        matching = [p for p in open_rows if _panic_symbol_key(p.symbol) == sym_u and p.side.lower() == side.lower()]
         for p in matching:
-            ep = exit_price if exit_price > 0 else (p.mark_price or p.entry_price)
+            ep = exit_price_v if exit_price_v > 0 else (p.mark_price or p.entry_price)
             pnl = (ep - p.entry_price) * p.quantity if p.side == "long" else (p.entry_price - ep) * p.quantity
             pct = ((ep - p.entry_price) / p.entry_price * 100) if p.side == "long" else ((p.entry_price - ep) / p.entry_price * 100)
             trade = Trade(
-                strategy_id=p.strategy_id, account_id=account.id,
+                strategy_id=p.strategy_id, account_id=strategy.account_id,
                 symbol=p.symbol, side=p.side, quantity=p.quantity,
                 entry_price=p.entry_price, exit_price=ep,
                 realized_pnl=pnl, pnl_pct=round(pct, 2),
                 entry_time=p.opened_at or now, exit_time=now,
-                layer=p.layer, close_reason="panic_close",
+                layer=p.layer,
+                grid_level=p.grid_level if hasattr(p, 'grid_level') else 0,
+                close_reason="panic_close",
             )
             db.add(trade)
             p.closed_at = now
@@ -276,24 +275,16 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
 
 @router.get("/{strategy_id}/exchange-positions")
 async def get_exchange_positions(strategy_id: int, db: AsyncSession = Depends(get_db)):
-    from ..services.binance_service import get_binance_service
-    from ..services.encryption import decrypt
-    from ..models.account import Account
-
     strategy = await db.get(Strategy, strategy_id)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    account = await db.get(Account, strategy.account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    api_key = decrypt(account.api_key_encrypted)
-    api_secret = decrypt(account.api_secret_encrypted)
-    binance = await get_binance_service(api_key, api_secret, account.testnet, account.hedge_mode)
+    exchange = await get_exchange_service(strategy.account_id)
+    if not exchange:
+        raise HTTPException(status_code=502, detail="Exchange service not available")
 
     try:
-        positions = await binance.fetch_positions()
+        positions = await exchange.fetch_positions()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch positions: {e}")
 
@@ -301,13 +292,18 @@ async def get_exchange_positions(strategy_id: int, db: AsyncSession = Depends(ge
     for p in positions:
         contracts = float(p.get("contracts", 0) or 0)
         if contracts > 0:
-            symbol = (p.get("symbol") or "").replace("/", "").replace(":USDT", "")
+            symbol = _panic_symbol_key(p.get("symbol") or "")
             side = (p.get("side") or "").lower()
             entry_price = float(p.get("entryPrice", 0) or 0)
             mark_price = float(p.get("markPrice", 0) or 0)
             notional = float(p.get("notional", 0) or 0)
             pnl = float(p.get("unrealizedPnl", 0) or 0)
-            pnl_pct = ((entry_price - mark_price) / entry_price * 100) if side == "short" and entry_price > 0 else ((mark_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+            pnl_pct = 0.0
+            if entry_price > 0:
+                if side == "short":
+                    pnl_pct = (entry_price - mark_price) / entry_price * 100
+                else:
+                    pnl_pct = (mark_price - entry_price) / entry_price * 100
             result.append({
                 "symbol": symbol,
                 "side": side,

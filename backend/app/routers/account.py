@@ -19,11 +19,14 @@ async def create_account(data: AccountCreate, db: AsyncSession = Depends(get_db)
 
     account = Account(
         name=data.name,
+        exchange=data.exchange,
         api_key_encrypted=encrypted_key,
         api_secret_encrypted=encrypted_secret,
         testnet=data.testnet,
         hedge_mode=data.hedge_mode,
     )
+    if data.okx_passphrase:
+        account.okx_passphrase_encrypted = encrypt(data.okx_passphrase)
     db.add(account)
     await db.commit()
     await db.refresh(account)
@@ -31,6 +34,7 @@ async def create_account(data: AccountCreate, db: AsyncSession = Depends(get_db)
     return AccountResponse(
         id=account.id,
         name=account.name,
+        exchange=account.exchange,
         masked_key=mask_key(data.api_key),
         testnet=account.testnet,
         hedge_mode=account.hedge_mode,
@@ -54,6 +58,7 @@ async def list_accounts(db: AsyncSession = Depends(get_db)):
             AccountResponse(
                 id=a.id,
                 name=a.name,
+                exchange=a.exchange or "binance",
                 masked_key=mk,
                 testnet=a.testnet,
                 hedge_mode=a.hedge_mode,

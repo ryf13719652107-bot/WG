@@ -14,9 +14,12 @@ class PositionResponse(BaseModel):
     mark_price: Optional[float]
     unrealized_pnl: Optional[float]
     layer: int
+    grid_level: int = 0
+    grid_trigger_price: Optional[float] = None
     take_profit_price: Optional[float]
     exchange_order_id: Optional[str]
     tp_limit_order_id: Optional[str] = None
+    add_limit_order_id: Optional[str] = None
     opened_at: datetime
     closed_at: Optional[datetime]
 

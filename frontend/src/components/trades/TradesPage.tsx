@@ -1,29 +1,33 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
 import type { Trade } from '../../types';
-import { Download, Trash2 } from 'lucide-react';
+import { Download, Trash2, Search, X } from 'lucide-react';
 
 export default function TradesPage() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
+  const [sideFilter, setSideFilter] = useState<'' | 'long' | 'short'>('');
+  const [symbolSearch, setSymbolSearch] = useState('');
   const limit = 50;
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
   const loadRef = useRef<() => void>(() => {});
 
-  const load = async () => {
-    const data = await api.listTrades({ limit, offset: page * limit, account_id: selectedAccountId ?? undefined });
+  const load = useCallback(async () => {
+    const data = await api.listTrades({
+      limit, offset: page * limit,
+      account_id: selectedAccountId ?? undefined,
+      side: sideFilter || undefined,
+      symbol: symbolSearch.toUpperCase() || undefined,
+    });
     setTrades(data.trades);
     setTotal(data.total);
-  };
+  }, [page, selectedAccountId, sideFilter, symbolSearch]);
   loadRef.current = load;
 
-  useEffect(() => {
-    setPage(0);
-  }, [selectedAccountId]);
-
-  useEffect(() => { load(); }, [page, selectedAccountId]);
+  useEffect(() => { setPage(0); }, [selectedAccountId, sideFilter, symbolSearch]);
+  useEffect(() => { load(); }, [page, selectedAccountId, sideFilter, symbolSearch]);
 
   useEffect(() => {
     const timer = setInterval(() => loadRef.current(), 30000);
@@ -36,9 +40,14 @@ export default function TradesPage() {
     load();
   };
 
-  const handleDeleteAll = async () => {
-    if (!confirm('确定要删除全部交易记录吗？此操作不可恢复。')) return;
-    await api.deleteAllTrades();
+  const handleDeleteFiltered = async () => {
+    const desc = [symbolSearch && `币种=${symbolSearch}`, sideFilter && `方向=${sideFilter === 'long' ? '多' : '空'}`].filter(Boolean).join(', ');
+    if (!confirm(`确定要删除当前筛选的所有交易记录吗？\n筛选条件：${desc || '全部'}\n此操作不可恢复。`)) return;
+    await api.deleteFilteredTrades({
+      symbol: symbolSearch.toUpperCase() || undefined,
+      side: sideFilter || undefined,
+      account_id: selectedAccountId ?? undefined,
+    });
     setPage(0);
     load();
   };
@@ -47,20 +56,60 @@ export default function TradesPage() {
     window.open('/api/trades/export', '_blank');
   };
 
+  const clearFilters = () => {
+    setSymbolSearch('');
+    setSideFilter('');
+    setPage(0);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xl font-bold">交易历史</h2>
         <div className="flex items-center gap-2">
-          <button onClick={handleDeleteAll} className="flex items-center gap-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 px-3 py-1.5 rounded-lg text-sm">
+          <button onClick={handleDeleteFiltered} className="flex items-center gap-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 px-3 py-1.5 rounded-lg text-sm">
             <Trash2 size={16} />
-            清空
+            删除筛选
           </button>
           <button onClick={exportCsv} className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm">
             <Download size={16} />
             导出CSV
           </button>
         </div>
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input
+            type="text"
+            placeholder="搜索币种..."
+            value={symbolSearch}
+            onChange={(e) => setSymbolSearch(e.target.value)}
+            className="w-44 bg-gray-800 border border-gray-700 rounded pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <div className="flex bg-gray-800 rounded-lg p-0.5">
+          {(['', 'long', 'short'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSideFilter(s)}
+              className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                sideFilter === s
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {s === '' ? '全部' : s === 'long' ? '做多' : '做空'}
+            </button>
+          ))}
+        </div>
+        {(symbolSearch || sideFilter) && (
+          <button onClick={clearFilters} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
+            <X size={12} /> 清除筛选
+          </button>
+        )}
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
@@ -82,15 +131,15 @@ export default function TradesPage() {
           <tbody>
             {trades.map((t) => (
               <tr key={t.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                <td className="p-3 text-gray-400">{new Date(t.exit_time).toLocaleString()}</td>
-                <td className="p-3 font-medium">{t.symbol}</td>
+                <td className="p-3 text-gray-400 text-xs">{new Date(t.exit_time).toLocaleString()}</td>
+                <td className="p-3 font-medium font-mono">{t.symbol}</td>
                 <td className={`p-3 ${t.side === 'long' ? 'text-green-400' : 'text-red-400'}`}>
                   {t.side === 'long' ? '做多' : '做空'}
                 </td>
                 <td className="p-3 font-mono">{(t.quantity * t.entry_price).toFixed(2)}</td>
-                <td className="p-3">{t.entry_price?.toFixed(8)}</td>
-                <td className="p-3">{t.exit_price?.toFixed(8)}</td>
-                <td className={`p-3 ${t.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <td className="p-3 font-mono text-xs">{t.entry_price?.toFixed(6)}</td>
+                <td className="p-3 font-mono text-xs">{t.exit_price?.toFixed(6)}</td>
+                <td className={`p-3 font-mono ${t.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                   {t.realized_pnl >= 0 ? '+' : ''}{t.realized_pnl.toFixed(4)}
                 </td>
                 <td className={`p-3 ${t.pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -137,7 +186,7 @@ export default function TradesPage() {
             上一页
           </button>
           <span className="text-sm text-gray-400">
-            第 {page + 1} 页 / 共 {Math.ceil(total / limit)} 页
+            第 {page + 1} 页 / 共 {Math.ceil(total / limit)} 页 ({total} 条)
           </span>
           <button
             onClick={() => setPage((p) => p + 1)}

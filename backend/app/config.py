@@ -16,7 +16,10 @@ class Settings(BaseSettings):
     binance_api_key: Optional[str] = None
     binance_secret: Optional[str] = None
     binance_testnet: bool = True
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://8.211.153.248:5173"
+    okx_api_key: str | None = None
+    okx_secret: str | None = None
+    okx_passphrase: str | None = None
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://47.238.227.85:5173"
     http_proxy: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

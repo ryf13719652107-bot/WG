@@ -1,6 +1,7 @@
 export interface Account {
   id: number;
   name: string;
+  exchange: string;
   masked_key: string;
   testnet: boolean;
   hedge_mode: boolean;
@@ -19,9 +20,12 @@ export interface Position {
   mark_price: number | null;
   unrealized_pnl: number | null;
   layer: number;
+  grid_level: number;
+  grid_trigger_price: number | null;
   take_profit_price: number | null;
   exchange_order_id: string | null;
   tp_limit_order_id: string | null;
+  add_limit_order_id: string | null;
   opened_at: string;
   closed_at: string | null;
 }
@@ -40,6 +44,7 @@ export interface Trade {
   entry_time: string;
   exit_time: string;
   layer: number;
+  grid_level: number;
   close_reason: string;
 }
 
@@ -57,15 +62,10 @@ export interface DashboardData {
   open_positions: number;
   daily_trades: number;
   win_rate_pct: number;
-  /** 历史累计已实现盈亏（trades 表） */
   total_realized_pnl: number;
-  /** 历史平仓笔数 */
   total_trades: number;
-  /** 历史胜率（盈利笔数/总笔数） */
   total_win_rate_pct: number;
-  /** 历史累计已实现盈亏 — 多单 */
   total_pnl_long: number;
-  /** 历史累计已实现盈亏 — 空单 */
   total_pnl_short: number;
   leverage_multiplier: number;
   master_switch: boolean;
@@ -81,24 +81,4 @@ export interface DashboardData {
     unrealized_pnl: number;
     pnl_pct: number;
   }>;
-}
-
-export interface CoinPoolEntry {
-  id: number;
-  symbol: string;
-  rank: number;
-  price_change_pct: number;
-  volume_24h: number | null;
-  source: 'gainers' | 'losers';
-  added_at: string;
-  last_updated: string;
-}
-
-export interface KlineData {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
 }

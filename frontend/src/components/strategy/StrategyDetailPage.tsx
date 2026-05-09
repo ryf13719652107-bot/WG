@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../../services/api';
 import type { Strategy } from '../../types/strategy';
-import type { CoinPoolEntry, Trade } from '../../types';
+import type { Trade } from '../../types';
 import { ArrowLeft, Terminal } from 'lucide-react';
 
 interface LogEntry { time: string; level: string; message: string; }
@@ -29,7 +29,6 @@ function pnlColor(v: number | null) {
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [strategy, setStrategy] = useState<Strategy | null>(null);
-  const [pool, setPool] = useState<CoinPoolEntry[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -43,14 +42,6 @@ export default function StrategyDetailPage() {
       const s = await api.getStrategy(Number(id));
       setStrategy(s);
       setLoading(false);
-
-      if (s.use_coin_pool) {
-        try {
-          const source = s.coin_pool_source === 'both' ? undefined : s.coin_pool_source;
-          const p = await api.getCoinPool(source);
-          setPool(p);
-        } catch { setPool([]); }
-      }
 
       try {
         const ep = await api.getExchangePositions(Number(id));
@@ -112,132 +103,59 @@ export default function StrategyDetailPage() {
         </span>
       </div>
 
-      {/* 区块1: 策略信息 */}
+      {/* Strategy parameters */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="font-semibold mb-3 text-sm flex flex-wrap items-center gap-2">
-          策略参数
-          <span className="text-xs font-normal px-2 py-0.5 rounded border border-amber-500/40 text-amber-200/90 bg-amber-950/30">
-            TradFi 过滤：{strategy.exclude_tradefi ? '已开启' : '已关闭'}（编辑请返回列表点「编辑」）
-          </span>
-        </h3>
+        <h3 className="font-semibold mb-3 text-sm">网格策略参数</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div>
             <span className={labelClass}>交易对</span>
-            <div className={valClass}>{strategy.symbol || '选币池自动'}</div>
+            <div className={valClass}>{strategy.symbol}</div>
           </div>
           <div>
-            <span className={labelClass}>K线周期</span>
-            <div className={valClass}>{strategy.timeframe}</div>
-          </div>
-          <div>
-            <span className={labelClass}>策略启动时间</span>
+            <span className={labelClass}>启动时间</span>
             <div className={valClass}>{fmtTime(strategy.started_at)}</div>
           </div>
           <div>
-            <span className={labelClass}>信号源</span>
-            <div className={valClass}>
-              {strategy.signal_source === 'wavetrend' ? `WaveTrend (通道${strategy.wt_channel_length} 均线${strategy.wt_average_length})` : `RSI (周期${strategy.rsi_period} ${strategy.direction === 'long' ? '<' : '>'}${strategy.rsi_entry_threshold})`}
-            </div>
+            <span className={labelClass}>杠杆</span>
+            <div className={valClass}>{strategy.leverage}x</div>
           </div>
           <div>
             <span className={labelClass}>首单仓位</span>
             <div className={valClass}>{strategy.base_qty_type === 'margin_pct' ? `保证金${strategy.base_qty_value}%` : `${strategy.base_qty_value} USDT`}</div>
           </div>
           <div>
-            <span className={labelClass}>加仓倍数 / 最大层数</span>
-            <div className={valClass}>x{strategy.martingale_mult} / {strategy.max_layers}层</div>
+            <span className={labelClass}>止盈比例</span>
+            <div className={valClass}>{strategy.tp_pct}% (限价单)</div>
           </div>
           <div>
-            <span className={labelClass}>跌幅触发</span>
-            <div className={valClass}>{strategy.price_drop_pct}%</div>
+            <span className={labelClass}>首层跌幅</span>
+            <div className={valClass}>{strategy.grid_drop_base_pct}%</div>
           </div>
           <div>
-            <span className={labelClass}>止盈 / 止损</span>
-            <div className={valClass}>{strategy.take_profit_pct}% ({strategy.take_profit_limit_order ? '限价单' : '市价单'}) / {strategy.stop_loss_enabled ? `${strategy.stop_loss_pct}%` : '禁用'}</div>
+            <span className={labelClass}>跌幅间隔倍数</span>
+            <div className={valClass}>x{strategy.grid_interval_multiplier}</div>
           </div>
           <div>
-            <span className={labelClass}>杠杆 / 滑点</span>
-            <div className={valClass}>{strategy.leverage}x / {strategy.slippage_pct}%</div>
+            <span className={labelClass}>仓位递增倍数</span>
+            <div className={valClass}>x{strategy.position_multiplier}</div>
           </div>
           <div>
-            <span className={labelClass}>保证金阈值</span>
-            <div className={valClass}>{strategy.margin_threshold} USDT</div>
+            <span className={labelClass}>最大层数</span>
+            <div className={valClass}>{strategy.max_layers}</div>
           </div>
           <div>
-            <span className={labelClass}>选币池</span>
-            <div className={valClass}>
-              {strategy.use_coin_pool
-                ? `${strategy.coin_pool_source === 'both' ? '涨幅+跌幅' : strategy.coin_pool_source === 'gainers' ? '仅涨幅' : '仅跌幅'} / ${Math.round(strategy.coin_pool_refresh_seconds / 60)}分钟 / ${strategy.coin_pool_fetch_mode === 'immediate' ? '立即抓取' : '间隔抓取'}`
-                : '固定交易对'}
-            </div>
+            <span className={labelClass}>累计亏损阈值</span>
+            <div className={valClass}>{strategy.cumulative_loss_threshold_u > 0 ? `${strategy.cumulative_loss_threshold_u} U` : '已禁用'}</div>
           </div>
           <div>
-            <span className={labelClass}>TradFi / 股票永续</span>
-            <div className={valClass}>
-              {(strategy.exclude_tradefi === true) ? '已排除（TRADIFI_PERPETUAL）' : '未排除'}
-            </div>
+            <span className={labelClass}>平仓重开</span>
+            <div className={valClass}>{strategy.reopen_after_close ? '是' : '否'}</div>
           </div>
-          {strategy.last_rsi != null && (
-            <div>
-              <span className={labelClass}>最近信号</span>
-              <div className={`text-sm ${strategy.last_signal === 'long' ? 'text-green-400' : strategy.last_signal === 'short' ? 'text-red-400' : 'text-gray-400'}`}>
-                {strategy.signal_source === 'wavetrend' ? 'WT1' : 'RSI'} {strategy.last_rsi} → {strategy.last_signal === 'long' ? '做多' : strategy.last_signal === 'short' ? '做空' : strategy.last_signal}
-                <span className="text-gray-600 ml-1">{strategy.last_signal_at ? new Date(strategy.last_signal_at).toLocaleTimeString() : ''}</span>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* 区块2: 当前选币池 */}
-        {strategy.use_coin_pool && (
-          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-            <h3 className="font-semibold mb-3 text-sm">
-              选币池
-              <span className="text-gray-500 ml-2 text-xs">
-                {strategy.coin_pool_source === 'both' ? '涨幅榜+跌幅榜' : strategy.coin_pool_source === 'gainers' ? '涨幅榜' : '跌幅榜'}
-                ({pool.length} 个币种)
-              </span>
-            </h3>
-            {pool.length === 0 ? (
-              <div className="text-gray-600 text-sm py-4 text-center">暂无数据</div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-500 border-b border-gray-800">
-                      <th className="text-left py-1.5 px-2">排名</th>
-                      <th className="text-left py-1.5 px-2">币种</th>
-                      <th className="text-right py-1.5 px-2">涨跌幅</th>
-                      <th className="text-right py-1.5 px-2">来源</th>
-                      <th className="text-right py-1.5 px-2">入选时间</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pool.map((e) => (
-                      <tr key={e.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                        <td className="py-1.5 px-2 text-gray-400">#{e.rank}</td>
-                        <td className="py-1.5 px-2 text-gray-200 font-mono">{e.symbol}</td>
-                        <td className={`py-1.5 px-2 text-right font-mono ${e.price_change_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {e.price_change_pct >= 0 ? '+' : ''}{e.price_change_pct?.toFixed(2)}%
-                        </td>
-                        <td className="py-1.5 px-2 text-right">
-                          <span className={`px-1.5 py-0.5 rounded text-xs ${e.source === 'gainers' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'}`}>
-                            {e.source === 'gainers' ? '涨幅' : '跌幅'}
-                          </span>
-                        </td>
-                        <td className="py-1.5 px-2 text-right text-gray-500">{fmtTime(e.added_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 区块3: 当前持仓 — 交易所实时数据 */}
+        {/* Exchange positions */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
           <h3 className="font-semibold mb-3 text-sm">
             当前持仓
@@ -284,7 +202,7 @@ export default function StrategyDetailPage() {
         </div>
       </div>
 
-      {/* 区块4: 交易记录 */}
+      {/* Trade history */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <h3 className="font-semibold mb-3 text-sm">
           交易记录
@@ -301,12 +219,11 @@ export default function StrategyDetailPage() {
                   <th className="text-left py-1.5 px-2">方向</th>
                   <th className="text-right py-1.5 px-2">入场价</th>
                   <th className="text-right py-1.5 px-2">出场价</th>
-                  <th className="text-right py-1.5 px-2">盈亏(USDT)</th>
+                  <th className="text-right py-1.5 px-2">盈亏</th>
                   <th className="text-right py-1.5 px-2">盈亏%</th>
-                  <th className="text-right py-1.5 px-2">层数</th>
+                  <th className="text-right py-1.5 px-2">层/网格</th>
                   <th className="text-right py-1.5 px-2">原因</th>
-                  <th className="text-right py-1.5 px-2">入场时间</th>
-                  <th className="text-right py-1.5 px-2">出场时间</th>
+                  <th className="text-right py-1.5 px-2">时间</th>
                 </tr>
               </thead>
               <tbody>
@@ -326,11 +243,10 @@ export default function StrategyDetailPage() {
                     <td className={`py-1.5 px-2 text-right font-mono ${pnlColor(t.pnl_pct)}`}>
                       {t.pnl_pct >= 0 ? '+' : ''}{t.pnl_pct?.toFixed(2)}%
                     </td>
-                    <td className="py-1.5 px-2 text-right text-gray-400">L{t.layer}</td>
+                    <td className="py-1.5 px-2 text-right text-gray-400">L{t.layer}/G{t.grid_level ?? 0}</td>
                     <td className="py-1.5 px-2 text-right text-gray-400">
                       {t.close_reason === 'take_profit' ? '止盈' : t.close_reason === 'stop_loss' ? '止损' : t.close_reason === 'panic_close' ? '紧急平仓' : t.close_reason === 'sync' ? '同步平仓' : t.close_reason === 'margin_stop' ? '保证金止损' : t.close_reason === 'manual' ? '手动平仓' : t.close_reason}
                     </td>
-                    <td className="py-1.5 px-2 text-right text-gray-500">{fmtTime(t.entry_time)}</td>
                     <td className="py-1.5 px-2 text-right text-gray-500">{fmtTime(t.exit_time)}</td>
                   </tr>
                 ))}
@@ -340,7 +256,7 @@ export default function StrategyDetailPage() {
         )}
       </div>
 
-      {/* 区块5: 交易日志 */}
+      {/* Logs */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <h3 className="font-semibold mb-3 text-sm flex items-center gap-2">
           <Terminal size={14} />
@@ -348,7 +264,7 @@ export default function StrategyDetailPage() {
           <span className="text-gray-500 text-xs">({logs.length} 条)</span>
         </h3>
         {logs.length === 0 ? (
-          <div className="text-gray-600 text-sm py-4 text-center">暂无日志 — 策略启动后会出现执行记录</div>
+          <div className="text-gray-600 text-sm py-4 text-center">暂无日志</div>
         ) : (
           <div className="max-h-80 overflow-y-auto">
             <table className="w-full text-xs font-mono">

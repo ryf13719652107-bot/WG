@@ -20,7 +20,8 @@ class Trade(Base):
     entry_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     exit_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     layer: Mapped[int] = mapped_column(Integer, default=0)
-    close_reason: Mapped[str] = mapped_column(String(50), default="manual")  # 'take_profit', 'stop_loss', 'manual', 'panic_close'
+    grid_level: Mapped[int] = mapped_column(Integer, default=0)
+    close_reason: Mapped[str] = mapped_column(String(50), default="manual")  # 'take_profit', 'stop_loss', 'manual', 'panic_close', 'margin_stop'
 
 
 Index("idx_trades_exit_time", Trade.exit_time)

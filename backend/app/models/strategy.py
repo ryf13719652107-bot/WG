@@ -1,3 +1,4 @@
+"""Strategy model for martingale grid trading."""
 import logging
 import traceback
 from datetime import datetime
@@ -16,68 +17,34 @@ class Strategy(Base):
     account_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     direction: Mapped[str] = mapped_column(String(10), nullable=False)  # 'long' or 'short'
-    symbol: Mapped[str] = mapped_column(String(50), nullable=True)  # NULL = use coin pool
-
-    # Signal source
-    signal_source: Mapped[str] = mapped_column(String(20), default="wavetrend", server_default="wavetrend")  # 'rsi' or 'wavetrend'
-
-    # General params
-    rsi_period: Mapped[int] = mapped_column(Integer, default=14)
-    timeframe: Mapped[str] = mapped_column(String(10), default="1m")
-    margin_threshold: Mapped[float] = mapped_column(Float, default=0.0)  # Auto-stop below this margin
-
-    # WaveTrend params
-    wt_channel_length: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
-    wt_average_length: Mapped[int] = mapped_column(Integer, default=21, server_default="21")
-    wt_ob_level: Mapped[float] = mapped_column(Float, default=60.0, server_default="60.0")
-    wt_os_level: Mapped[float] = mapped_column(Float, default=-60.0, server_default="-60.0")
+    symbol: Mapped[str] = mapped_column(String(50), nullable=False)  # required — no more coin pool
 
     # Entry position params
     base_qty_type: Mapped[str] = mapped_column(String(20), default="margin_pct")  # 'margin_pct' or 'usdt'
-    base_qty_value: Mapped[float] = mapped_column(Float, default=6.0)  # 6% margin or USDT amount
-    rsi_entry_threshold: Mapped[float] = mapped_column(Float, default=30.0)  # long=30, short=75
+    base_qty_value: Mapped[float] = mapped_column(Float, default=6.0)
 
-    # Martingale params
-    price_drop_pct: Mapped[float] = mapped_column(Float, default=30.0)
-    martingale_mult: Mapped[float] = mapped_column(Float, default=1.5)
+    # Martingale grid params
     max_layers: Mapped[int] = mapped_column(Integer, default=8)
-    martingale_rsi_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")  # Require RSI signal for adds
+    leverage: Mapped[int] = mapped_column(Integer, default=20)
 
-    # Take profit params
-    take_profit_pct: Mapped[float] = mapped_column(Float, default=2.0)
-    take_profit_limit_order: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # Stop loss
-    stop_loss_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    stop_loss_pct: Mapped[float] = mapped_column(Float, default=5.0)
-
-    # Slippage protection
-    slippage_pct: Mapped[float] = mapped_column(Float, default=0.5)  # Max slippage %, 0 = disabled
-
-    # Leverage
-    leverage: Mapped[int] = mapped_column(Integer, default=20)  # Contract leverage
-
-    # Coin pool
-    use_coin_pool: Mapped[bool] = mapped_column(Boolean, default=True)
-    coin_pool_source: Mapped[str] = mapped_column(String(20), default="gainers")  # 'gainers', 'losers', 'both'
-    coin_pool_refresh_seconds: Mapped[int] = mapped_column(Integer, default=3600)  # how often to refresh coin pool
-    coin_pool_fetch_mode: Mapped[str] = mapped_column(String(20), default="interval")  # 'immediate' or 'interval'
-    coin_pool_top_n: Mapped[int] = mapped_column(Integer, default=20, server_default="20")
-    # False by default. True: 排除 TRADIFI_PERPETUAL（股票/TradFi 永续），仅本策略扫描列表过滤
-    exclude_tradefi: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Grid-specific params
+    tp_pct: Mapped[float] = mapped_column(Float, default=1.0)  # take profit % (default 1%)
+    grid_drop_base_pct: Mapped[float] = mapped_column(Float, default=1.0)  # base drop % for first grid level
+    grid_interval_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # drop interval multiplier
+    position_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # position size multiplier per layer
+    cumulative_loss_threshold_u: Mapped[float] = mapped_column(Float, default=0.0)  # stop loss U threshold (0=disabled)
+    reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # reopen after TP/SL close
 
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-    last_rsi: Mapped[float] = mapped_column(Float, nullable=True)
-    last_signal: Mapped[str] = mapped_column(String(20), nullable=True)  # 'long', 'short', 'neutral'
-    last_signal_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing, onupdate=now_beijing)
 
 
 Index("idx_strategies_account", Strategy.account_id)
 Index("idx_strategies_status", Strategy.status)
+Index("idx_strategies_symbol", Strategy.symbol)
 
 
 @event.listens_for(Strategy, "before_update")

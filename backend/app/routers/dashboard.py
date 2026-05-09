@@ -14,8 +14,7 @@ from ..models.trade import Trade
 from ..models.bot_config import BotConfig
 from ..models.account import Account
 from ..schemas.dashboard import DashboardSnapshot
-from ..services.encryption import decrypt
-from ..services.binance_service import get_binance_service
+from ..services.exchange_factory import get_exchange_service
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -38,7 +37,7 @@ def _dashboard_exchange_cache_set(account_id: int, payload: dict[str, Any]) -> N
     _dashboard_exchange_cache[account_id] = (time.monotonic(), payload)
 
 
-async def _fetch_dashboard_exchange_slice(binance) -> dict[str, Any]:
+async def _fetch_dashboard_exchange_slice(exchange) -> dict[str, Any]:
     """REST: balance + positions for dashboard header. Does not touch DB."""
     total_balance = 0.0
     available_balance = 0.0
@@ -50,7 +49,7 @@ async def _fetch_dashboard_exchange_slice(binance) -> dict[str, Any]:
     total_notional = 0.0
     exchange_positions: list[dict] = []
     try:
-        balance = await asyncio.wait_for(binance.fetch_balance(), timeout=8.0)
+        balance = await asyncio.wait_for(exchange.fetch_balance(), timeout=8.0)
         total_balance = float(balance.get("total", {}).get("USDT", 0) or 0)
         available_balance = float(balance.get("free", {}).get("USDT", 0) or 0)
         balance_status = "ok"
@@ -62,7 +61,7 @@ async def _fetch_dashboard_exchange_slice(binance) -> dict[str, Any]:
 
     if balance_status == "ok":
         try:
-            positions = await asyncio.wait_for(binance.fetch_positions(), timeout=8.0)
+            positions = await asyncio.wait_for(exchange.fetch_positions(), timeout=8.0)
             for p in positions:
                 contracts = float(p.get("contracts", 0) or 0)
                 if contracts > 0:
@@ -129,7 +128,7 @@ async def get_dashboard(
     account_name = ""
     balance_status = "no_account"
     account = None
-    binance = None
+    exchange = None
     filter_account_id = account_id
     open_positions = 0
     unrealized_pnl = 0.0
@@ -150,37 +149,38 @@ async def get_dashboard(
             account_name = account.name
             filter_account_id = account.id
             try:
-                api_key = decrypt(account.api_key_encrypted)
-                api_secret = decrypt(account.api_secret_encrypted)
-                binance = await get_binance_service(api_key, api_secret, account.testnet, account.hedge_mode)
-                cached = (
-                    _dashboard_exchange_cache_get(filter_account_id)
-                    if filter_account_id is not None
-                    else None
-                )
-                if cached is not None:
-                    total_balance = float(cached["total_balance"])
-                    available_balance = float(cached["available_balance"])
-                    balance_status = str(cached["balance_status"])
-                    open_positions = int(cached["open_positions"])
-                    unrealized_pnl = float(cached["unrealized_pnl"])
-                    unrealized_pnl_long = float(cached["unrealized_pnl_long"])
-                    unrealized_pnl_short = float(cached["unrealized_pnl_short"])
-                    leverage_multiplier = float(cached["leverage_multiplier"])
-                    exchange_positions = list(cached["exchange_positions"])
+                exchange = await get_exchange_service(account.id)
+                if exchange:
+                    cached = (
+                        _dashboard_exchange_cache_get(filter_account_id)
+                        if filter_account_id is not None
+                        else None
+                    )
+                    if cached is not None:
+                        total_balance = float(cached["total_balance"])
+                        available_balance = float(cached["available_balance"])
+                        balance_status = str(cached["balance_status"])
+                        open_positions = int(cached["open_positions"])
+                        unrealized_pnl = float(cached["unrealized_pnl"])
+                        unrealized_pnl_long = float(cached["unrealized_pnl_long"])
+                        unrealized_pnl_short = float(cached["unrealized_pnl_short"])
+                        leverage_multiplier = float(cached["leverage_multiplier"])
+                        exchange_positions = list(cached["exchange_positions"])
+                    else:
+                        ex = await _fetch_dashboard_exchange_slice(exchange)
+                        total_balance = float(ex["total_balance"])
+                        available_balance = float(ex["available_balance"])
+                        balance_status = str(ex["balance_status"])
+                        open_positions = int(ex["open_positions"])
+                        unrealized_pnl = float(ex["unrealized_pnl"])
+                        unrealized_pnl_long = float(ex["unrealized_pnl_long"])
+                        unrealized_pnl_short = float(ex["unrealized_pnl_short"])
+                        leverage_multiplier = float(ex["leverage_multiplier"])
+                        exchange_positions = list(ex["exchange_positions"])
+                        if balance_status == "ok" and filter_account_id is not None:
+                            _dashboard_exchange_cache_set(filter_account_id, ex)
                 else:
-                    ex = await _fetch_dashboard_exchange_slice(binance)
-                    total_balance = float(ex["total_balance"])
-                    available_balance = float(ex["available_balance"])
-                    balance_status = str(ex["balance_status"])
-                    open_positions = int(ex["open_positions"])
-                    unrealized_pnl = float(ex["unrealized_pnl"])
-                    unrealized_pnl_long = float(ex["unrealized_pnl_long"])
-                    unrealized_pnl_short = float(ex["unrealized_pnl_short"])
-                    leverage_multiplier = float(ex["leverage_multiplier"])
-                    exchange_positions = list(ex["exchange_positions"])
-                    if balance_status == "ok" and filter_account_id is not None:
-                        _dashboard_exchange_cache_set(filter_account_id, ex)
+                    balance_status = "no_account"
             except asyncio.TimeoutError:
                 balance_status = "error"
             except Exception as e:

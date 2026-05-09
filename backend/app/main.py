@@ -11,10 +11,11 @@ from .config import settings
 from .database import init_db, get_db, async_session
 from .models.bot_config import BotConfig
 from .models.strategy import Strategy
-from .routers import account, strategies, positions, trades, dashboard, coin_pool, websocket
+from .routers import account, strategies, positions, trades, dashboard, websocket
 from .services.scheduler import strategy_scheduler
-from .services.binance_service import get_public_binance
-from .services.coin_pool_service import coin_pool_service
+from .services.exchange_factory import get_public_exchange
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # ---- Logging Setup ----
 LOG_DIR = "logs"
@@ -57,53 +58,38 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("Smart Hedge Martin starting...")
-    logger.info("Step 1/6: init_db...")
+    logger.info("Step 1/5: init_db...")
     await init_db()
-    logger.info("Step 2/6: scheduler.start...")
+    logger.info("Step 2/5: scheduler.start...")
     strategy_scheduler.start()
-    logger.info("Step 3/6: resume_running_strategies...")
+    logger.info("Step 3/5: resume_running_strategies...")
     await strategy_scheduler.resume_running_strategies()
-    logger.info("Step 4/6: get_public_binance...")
-    public_binance = await get_public_binance()
+    logger.info("Step 4/5: start log persistence...")
+    from .services.log_service import strategy_log_service
+    await strategy_log_service.start_persistence()
 
-    # Apply coin pool config from strategies
-    logger.info("Step 5/6: coin pool config...")
-    async with async_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(Strategy).where(Strategy.use_coin_pool == True, Strategy.status == "running").order_by(Strategy.coin_pool_refresh_seconds).limit(1)
-        )
-        strategy_with_pool = result.scalar()
-        if strategy_with_pool:
-            coin_pool_service.update_config(
-                refresh_interval_seconds=strategy_with_pool.coin_pool_refresh_seconds,
-                pool_source=strategy_with_pool.coin_pool_source,
-            )
-
-    logger.info("Step 6/6: start_auto_refresh...")
-    await coin_pool_service.start_auto_refresh(public_binance)
-    logger.info("Coin pool auto-refresh started")
-    logger.info("Backend ready")
+    logger.info("Step 5/5: Backend ready")
     yield
     logger.info("Shutting down...")
     strategy_scheduler.stop()
-    await coin_pool_service.stop_auto_refresh()
+    await strategy_log_service.stop_persistence()
     try:
-        from .services.kline_stream import kline_stream_manager
-        await kline_stream_manager.shutdown()
+        from .services.price_stream import price_stream
+        await price_stream.shutdown()
     except Exception as e:
-        logger.warning("kline_stream shutdown error: %s", e)
+        logger.warning("price_stream shutdown error: %s", e)
+    try:
+        from .services.exchange_factory import clear_all_cache
+        await clear_all_cache()
+    except Exception as e:
+        logger.warning("exchange cache clear error: %s", e)
     logger.info("Backend stopped")
 
 
-import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
 app = FastAPI(
-    title="Smart Hedge Martin",
-    description="智能对冲交易机器人系统",
-    version="0.1.0",
+    title="马丁网格交易",
+    description="Grid Martingale Trading System",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -127,77 +113,83 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Register routers
+# Register routers — must be before SPA catch-all
 app.include_router(account.router)
 app.include_router(strategies.router)
 app.include_router(positions.router)
 app.include_router(trades.router)
 app.include_router(dashboard.router)
-app.include_router(coin_pool.router)
 app.include_router(websocket.router)
-
-# Serve frontend static files
-# __file__ = backend/app/main.py → go up 3 levels to project root
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
-frontend_dist = os.path.abspath(frontend_dist)
-_no_cache_html = {
-    "Cache-Control": "no-store, no-cache, must-revalidate",
-    "Pragma": "no-cache",
-}
-if os.path.isdir(frontend_dist):
-    logger.info("Frontend dist path: %s", frontend_dist)
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="static")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        """SPA fallback — serve index.html for non-API routes."""
-        file_path = os.path.join(frontend_dist, full_path) if full_path else ""
-        if full_path and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        index_html = os.path.join(frontend_dist, "index.html")
-        return FileResponse(index_html, headers=_no_cache_html)
-else:
-    logger.warning("Frontend dist missing at %s — run: cd frontend && npm run build", frontend_dist)
 
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.2.0"}
 
 
-@app.get("/api/klines")
-async def get_klines(
-    symbol: str = Query(...),
-    timeframe: str = Query(default="1m"),
-    limit: int = Query(default=200, le=500),
-):
-    binance = await get_public_binance()
-    klines = await binance.fetch_klines(symbol, timeframe, limit)
-    return [
-        {
-            "time": k[0],
-            "open": k[1],
-            "high": k[2],
-            "low": k[3],
-            "close": k[4],
-            "volume": k[5],
-        }
-        for k in klines
-    ]
+@app.get("/api/markets")
+async def get_markets(exchange: str = "binance"):
+    """Return available USDT perpetual symbols for the given exchange."""
+    from .services.exchange_factory import get_public_exchange
+    from .services.exchange_base import BaseExchangeService
+    try:
+        ex = await get_public_exchange(exchange)
+        # fetch_markets returns list of Market dicts in ccxt
+        raw = await ex.fetch_markets()
+        symbols = []
+        seen = set()
+        for m in (raw or []):
+            if not isinstance(m, dict):
+                continue
+            sym = m.get("id") or m.get("symbol") or ""
+            norm = BaseExchangeService._norm_sym(sym)
+            # USDT perpetual swap only
+            if not norm.endswith("USDT") or norm in seen:
+                continue
+            # Filter: linear perpetual contract (no expiry date)
+            mtype = m.get("type") or ""
+            linear = m.get("linear")
+            if mtype == "swap" or linear or (m.get("swap") is True):
+                seen.add(norm)
+                symbols.append(norm)
+        symbols.sort()
+        return {"symbols": symbols}
+    except Exception as e:
+        # Fallback: return hardcoded popular USDT pairs
+        logger = logging.getLogger(__name__)
+        logger.warning("Failed to fetch markets: %s, returning fallback list", e)
+        popular = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+                    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+                    "MATICUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "ETCUSDT",
+                    "OPUSDT", "ARBUSDT", "FILUSDT", "APTUSDT", "NEARUSDT",
+                    "SUIUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT", "SEIUSDT"]
+        return {"symbols": popular}
 
 
-@app.get("/api/ticker")
-async def get_ticker(symbol: str = Query(...)):
-    binance = await get_public_binance()
-    ticker = await binance.fetch_ticker(symbol)
-    return {
-        "symbol": symbol,
-        "last": ticker.get("last"),
-        "change_pct": ticker.get("percentage"),
-        "high_24h": ticker.get("high"),
-        "low_24h": ticker.get("low"),
-        "volume_24h": ticker.get("quoteVolume"),
-    }
+@app.get("/api/markets/strategy-counts")
+async def get_strategy_counts(account_id: int | None = None, db=None):
+    """Return per-symbol strategy counts for the 2-per-symbol constraint."""
+    from sqlalchemy import select, func
+    from .database import async_session
+    from .models.strategy import Strategy
+    async with async_session() as session:
+        stmt = select(Strategy.symbol, func.count(Strategy.id)).group_by(Strategy.symbol)
+        if account_id:
+            stmt = stmt.where(Strategy.account_id == account_id)
+        result = await session.execute(stmt)
+        counts = {row[0]: row[1] for row in result.all()}
+        # Also include per-direction to show which direction already exists
+        dir_stmt = select(Strategy.symbol, Strategy.direction).where(Strategy.symbol.is_not(None))
+        if account_id:
+            dir_stmt = dir_stmt.where(Strategy.account_id == account_id)
+        dir_result = await session.execute(dir_stmt)
+        directions: dict[str, list[str]] = {}
+        for row in dir_result.all():
+            sym = row[0]
+            if sym not in directions:
+                directions[sym] = []
+            directions[sym].append(row[1])
+        return {"counts": counts, "directions": directions}
 
 
 class ToggleRequest(BaseModel):
@@ -232,3 +224,26 @@ async def toggle_bot(body: ToggleRequest, db: AsyncSession = Depends(get_db)):
         db.add(config)
     await db.commit()
     return {"master_switch": enabled}
+
+
+# ---- SPA fallback: must be LAST after all API routes ----
+frontend_dist = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+frontend_dist = os.path.abspath(frontend_dist)
+_no_cache_html = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+}
+if os.path.isdir(frontend_dist):
+    logger.info("Frontend dist path: %s", frontend_dist)
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="static")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """SPA fallback — serve index.html for non-API routes."""
+        file_path = os.path.join(frontend_dist, full_path) if full_path else ""
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        index_html = os.path.join(frontend_dist, "index.html")
+        return FileResponse(index_html, headers=_no_cache_html)
+else:
+    logger.warning("Frontend dist missing at %s — run: cd frontend && npm run build", frontend_dist)

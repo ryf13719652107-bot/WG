@@ -2,7 +2,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from ..services.websocket_manager import ws_manager
-from ..services.binance_service import get_public_binance
+from ..services.exchange_factory import get_public_exchange
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -15,10 +15,10 @@ async def market_websocket(websocket: WebSocket, symbols: str = Query(default=""
 
     try:
         if symbol_list:
-            binance = await get_public_binance()
+            ex = await get_public_exchange("binance")
             while True:
                 try:
-                    tickers = await binance.watch_tickers(symbol_list)
+                    tickers = await ex.watch_tickers(symbol_list)
                     if isinstance(tickers, dict):
                         for sym, ticker in tickers.items():
                             if isinstance(ticker, dict):
@@ -60,3 +60,26 @@ async def dashboard_websocket(websocket: WebSocket):
         pass
     finally:
         await ws_manager.disconnect(websocket, "dashboard")
+
+
+@router.websocket("/ws/health")
+async def health_websocket(websocket: WebSocket):
+    await ws_manager.connect(websocket, "health")
+    try:
+        while True:
+            await asyncio.sleep(10)
+            from ..services.health_monitor import health_monitor
+            all_h = health_monitor.get_all_health()
+            data = {}
+            for sid, h in all_h.items():
+                data[str(sid)] = {
+                    "status": h.status.value,
+                    "consecutive_failures": h.consecutive_failures,
+                    "checks": h.checks,
+                    "messages": h.messages[-5:],
+                }
+            await ws_manager.broadcast("health", {"type": "health_snapshot", "strategies": data})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await ws_manager.disconnect(websocket, "health")

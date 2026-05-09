@@ -2,12 +2,10 @@ import { Component, ReactNode } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 import DashboardPage from './components/dashboard/DashboardPage';
-import ChartPage from './components/chart/ChartPage';
 import StrategyPage from './components/strategy/StrategyPage';
 import StrategyDetailPage from './components/strategy/StrategyDetailPage';
 import PositionsPage from './components/positions/PositionsPage';
 import TradesPage from './components/trades/TradesPage';
-import CoinPoolPage from './components/coinpool/CoinPoolPage';
 import SettingsPage from './components/settings/SettingsPage';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -44,12 +42,10 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/chart/:symbol?" element={<ChartPage />} />
           <Route path="/strategies" element={<StrategyPage />} />
           <Route path="/strategies/:id" element={<StrategyDetailPage />} />
           <Route path="/positions" element={<PositionsPage />} />
           <Route path="/trades" element={<TradesPage />} />
-          <Route path="/coin-pool" element={<CoinPoolPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </AppShell>

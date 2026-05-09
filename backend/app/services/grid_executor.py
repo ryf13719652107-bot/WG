@@ -1,0 +1,355 @@
+"""Grid strategy executor — state machine that drives the martingale grid lifecycle."""
+import logging
+from typing import Optional
+
+from ..config import now_beijing
+from ..models.position import Position
+from ..models.trade import Trade
+from .grid_engine import GridStrategyEngine, GridLevel
+from .order_tracker import order_tracker, OrderState
+
+logger = logging.getLogger(__name__)
+
+
+class GridExecutor:
+    """Per-symbol grid strategy lifecycle executor.
+
+    Flow:
+    1. No position → market open initial + place TP limit + place first grid add limit
+    2. Has positions → check TP fills / grid add fills / stop loss
+    3. TP fill → close all + reopen initial
+    4. Grid add fill → update avg entry + replace TP + place next grid add
+    5. Stop loss hit → close all + reopen initial (with cooldown)
+    """
+
+    def __init__(self, engine: GridStrategyEngine):
+        self.engine = engine
+
+    async def process_symbol(
+        self, session, strategy, symbol: str, exchange, current_price: float,
+    ) -> None:
+        """Main per-symbol processing entry point."""
+        # Check existing open positions
+        from sqlalchemy import select
+        stmt = select(Position).where(
+            Position.strategy_id == strategy.id,
+            Position.symbol == symbol,
+            Position.closed_at.is_(None),
+        ).order_by(Position.grid_level)
+        result = await session.execute(stmt)
+        open_positions = list(result.scalars().all())
+
+        if not open_positions:
+            await self._open_initial(session, strategy, symbol, exchange, current_price)
+            return
+
+        # Update mark prices
+        for pos in open_positions:
+            pos.mark_price = current_price
+            if pos.side == "long":
+                pos.unrealized_pnl = (current_price - pos.entry_price) * pos.quantity
+            else:
+                pos.unrealized_pnl = (pos.entry_price - current_price) * pos.quantity
+
+        # Check TP order fills
+        tp_filled = await self._check_tp_fills(session, strategy, symbol, exchange, open_positions, current_price)
+        if tp_filled:
+            return  # positions were closed and reopened
+
+        # Check grid add order fills
+        add_filled = await self._check_grid_add_fills(session, strategy, symbol, exchange, open_positions, current_price)
+        if add_filled:
+            return  # positions updated
+
+        # Check cumulative stop loss
+        sl_triggered = await self._check_stop_loss(session, strategy, symbol, exchange, open_positions, current_price)
+        if sl_triggered:
+            return
+
+    async def _open_initial(self, session, strategy, symbol, exchange, current_price):
+        """Open initial position at market + place TP limit + first grid add limit."""
+        from sqlalchemy import select
+
+        side_raw = "buy" if strategy.direction == "long" else "sell"
+        position_side = "LONG" if strategy.direction == "long" else "SHORT"
+
+        # Calculate margin-based quantity if needed
+        qty = self.engine.base_qty
+        if strategy.base_qty_type == "margin_pct":
+            try:
+                balance = await exchange.fetch_balance()
+                total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
+                margin_usdt = total_usdt * (strategy.base_qty_value / 100.0)
+                lev = self.engine.leverage
+                if current_price > 0:
+                    qty = (margin_usdt * lev) / current_price
+            except Exception as e:
+                logger.warning("Failed to calculate margin-based qty: %s, using base qty", e)
+
+        # 1. Market open initial position
+        try:
+            order = await exchange.create_market_order(
+                symbol, side_raw, qty, reduce_only=False, position_side=position_side,
+            )
+        except Exception as e:
+            logger.error("Failed to open initial position for %s %s: %s", strategy.id, symbol, e)
+            return
+
+        entry_price = float(order.get("average", 0) or order.get("price", 0) or current_price)
+        filled_qty = float(order.get("filled", qty) or qty)
+
+        # Record position in DB
+        pos = Position(
+            strategy_id=strategy.id,
+            account_id=strategy.account_id,
+            symbol=symbol,
+            side=strategy.direction,
+            quantity=filled_qty,
+            entry_price=entry_price,
+            mark_price=current_price,
+            layer=0,
+            grid_level=0,
+            exchange_order_id=str(order.get("id", "")),
+        )
+        session.add(pos)
+        await session.commit()
+        await session.refresh(pos)
+
+        # Track the entry order
+        order_tracker.add(
+            str(order.get("id", "")), symbol, side_raw, "market",
+            filled_qty, entry_price, strategy.id, "initial_entry",
+        )
+
+        # 2. Place TP limit order
+        tp_price = self.engine.calculate_tp_price(entry_price, strategy.direction)
+        tp_side = "sell" if strategy.direction == "long" else "buy"
+        try:
+            tp_order = await exchange.create_limit_order(
+                symbol, tp_side, filled_qty, tp_price,
+                reduce_only=True, position_side=position_side,
+            )
+            pos.tp_limit_order_id = str(tp_order.get("id", ""))
+            pos.take_profit_price = tp_price
+            order_tracker.add(
+                pos.tp_limit_order_id, symbol, tp_side, "limit",
+                filled_qty, tp_price, strategy.id, "tp",
+            )
+        except Exception as e:
+            logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
+
+        await session.commit()
+
+        # 3. Place first grid add limit order
+        grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
+        if grid_levels:
+            await self._place_grid_add(session, strategy, symbol, exchange, pos, grid_levels[0])
+
+        logger.info(
+            "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f",
+            strategy.direction, symbol, filled_qty, entry_price, tp_price,
+        )
+
+    async def _place_grid_add(self, session, strategy, symbol, exchange, position, grid_level: GridLevel):
+        """Place a limit add order for a grid level."""
+        add_side = "buy" if strategy.direction == "long" else "sell"
+        position_side = "LONG" if strategy.direction == "long" else "SHORT"
+
+        try:
+            order = await exchange.create_limit_order(
+                symbol, add_side, grid_level.quantity, grid_level.trigger_price,
+                reduce_only=False, position_side=position_side,
+            )
+            order_id = str(order.get("id", ""))
+            order_tracker.add(
+                order_id, symbol, add_side, "limit",
+                grid_level.quantity, grid_level.trigger_price, strategy.id, "grid_add",
+            )
+            logger.info(
+                "Grid add placed: %s lv=%d qty=%.4f trigger=%.4f",
+                symbol, grid_level.level, grid_level.quantity, grid_level.trigger_price,
+            )
+            return order_id
+        except Exception as e:
+            logger.error("Failed to place grid add order for %s lv=%d: %s", symbol, grid_level.level, e)
+            return None
+
+    async def _check_tp_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
+        """Check if TP limit orders have filled. If so, close all and reopen."""
+        tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
+        filled = False
+        for o in tp_orders:
+            if o.symbol == symbol:
+                updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+                if updated and updated.status == OrderState.FILLED:
+                    filled = True
+                    break
+
+        if not filled:
+            return False
+
+        # TP filled → close all positions
+        await self._close_all(session, strategy, symbol, exchange, positions, current_price, "take_profit")
+
+        # Reopen initial if configured; otherwise stop the strategy
+        if strategy.reopen_after_close:
+            await self._open_initial(session, strategy, symbol, exchange, current_price)
+        else:
+            strategy.status = "stopped"
+            await session.commit()
+
+        return True
+
+    async def _check_grid_add_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
+        """Check if grid add limit orders have filled. Update positions and re-place orders."""
+        add_orders = order_tracker.get_pending_by_purpose(strategy.id, "grid_add")
+        any_filled = False
+        for o in add_orders:
+            if o.symbol != symbol:
+                continue
+            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+            if not updated or updated.status != OrderState.FILLED:
+                continue
+
+            # Grid add filled → record new position
+            side = strategy.direction
+            position_side = "LONG" if side == "long" else "SHORT"
+
+            pos = Position(
+                strategy_id=strategy.id,
+                account_id=strategy.account_id,
+                symbol=symbol,
+                side=side,
+                quantity=o.amount,
+                entry_price=o.price,
+                mark_price=current_price,
+                layer=len(positions),  # next layer
+                grid_level=len(positions),
+                exchange_order_id=o.order_id,
+                grid_trigger_price=o.price,
+            )
+            session.add(pos)
+            await session.commit()
+            await session.refresh(pos)
+            positions.append(pos)
+            any_filled = True
+
+            logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, len(positions) - 1, o.amount, o.price)
+
+            # Cancel old TP order
+            await self._cancel_tp_orders(session, strategy, symbol, exchange, positions)
+
+            # Place new TP order for combined position
+            avg_entry = self.engine.calculate_avg_entry(positions)
+            tp_price = self.engine.calculate_tp_price(avg_entry, side)
+            tp_side = "sell" if side == "long" else "buy"
+            total_qty = sum(float(p.quantity) for p in positions)
+            try:
+                tp_order = await exchange.create_limit_order(
+                    symbol, tp_side, total_qty, tp_price,
+                    reduce_only=True, position_side=position_side,
+                )
+                tp_order_id = str(tp_order.get("id", ""))
+                # Update all positions with new TP order ID
+                for p in positions:
+                    p.tp_limit_order_id = tp_order_id
+                    p.take_profit_price = tp_price
+                order_tracker.add(
+                    tp_order_id, symbol, tp_side, "limit",
+                    total_qty, tp_price, strategy.id, "tp",
+                )
+            except Exception as e:
+                logger.error("Failed to place new TP after grid add: %s", e)
+
+            await session.commit()
+
+            # Place next grid add if below max layers (use original base price to avoid grid drift)
+            base_price = float(positions[0].grid_trigger_price or positions[0].entry_price)
+            next_gl = self.engine.get_next_grid_add(base_price, len(positions) - 1, side)
+            if next_gl:
+                await self._place_grid_add(session, strategy, symbol, exchange, pos, next_gl)
+
+        return any_filled
+
+    async def _cancel_tp_orders(self, session, strategy, symbol, exchange, positions):
+        """Cancel all existing TP limit orders for this strategy+symbol."""
+        tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
+        for o in tp_orders:
+            if o.symbol == symbol:
+                try:
+                    await exchange.cancel_order(o.order_id, o.symbol)
+                except Exception as e:
+                    logger.debug("Cancel TP order %s: %s", o.order_id, e)
+
+    async def _check_stop_loss(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
+        """Check cumulative U loss stop loss. Close all if triggered."""
+        cumulative_u = self.engine.calculate_cumulative_loss(positions, current_price)
+        if not self.engine.should_stop_loss(cumulative_u):
+            return False
+
+        logger.warning(
+            "STOP LOSS: strategy=%d %s cumulative_u=%.2f threshold=%.2f",
+            strategy.id, symbol, cumulative_u, self.engine.loss_threshold,
+        )
+
+        await self._close_all(session, strategy, symbol, exchange, positions, current_price, "stop_loss")
+
+        # Reopen initial if configured; otherwise stop the strategy
+        if strategy.reopen_after_close:
+            await self._open_initial(session, strategy, symbol, exchange, current_price)
+        else:
+            strategy.status = "stopped"
+            await session.commit()
+
+        return True
+
+    async def _close_all(self, session, strategy, symbol, exchange, positions, current_price, reason: str):
+        """Close all positions for this strategy+symbol via market order. Record trades."""
+        # Cancel all pending orders first
+        pending = order_tracker.get_active_for_strategy(strategy.id)
+        for o in pending:
+            if o.symbol == symbol:
+                try:
+                    await exchange.cancel_order(o.order_id, o.symbol)
+                except Exception:
+                    pass
+
+        # Market close all
+        try:
+            await exchange.close_position(symbol, strategy.direction)
+        except Exception as e:
+            logger.error("Failed to close position for %s %s: %s", strategy.id, symbol, e)
+
+        # Record trades for each position
+        now = now_beijing()
+        for pos in positions:
+            exit_price = current_price
+            if pos.side == "long":
+                pnl = (exit_price - pos.entry_price) * pos.quantity
+                pct = (exit_price - pos.entry_price) / pos.entry_price * 100 if pos.entry_price > 0 else 0
+            else:
+                pnl = (pos.entry_price - exit_price) * pos.quantity
+                pct = (pos.entry_price - exit_price) / pos.entry_price * 100 if pos.entry_price > 0 else 0
+
+            trade = Trade(
+                strategy_id=strategy.id,
+                account_id=strategy.account_id,
+                symbol=symbol,
+                side=pos.side,
+                quantity=pos.quantity,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                realized_pnl=round(pnl, 4),
+                pnl_pct=round(pct, 4),
+                entry_time=pos.opened_at or now,
+                exit_time=now,
+                layer=pos.layer,
+                grid_level=pos.grid_level,
+                close_reason=reason,
+            )
+            session.add(trade)
+            pos.closed_at = now
+
+        await session.commit()
+        order_tracker.clear_strategy(strategy.id)
+        logger.info("Closed all %s positions for strategy=%d reason=%s", symbol, strategy.id, reason)

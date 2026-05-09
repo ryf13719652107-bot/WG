@@ -1,0 +1,148 @@
+"""In-memory order cache for real-time order state tracking."""
+import time
+import logging
+from enum import Enum
+from dataclasses import dataclass, field
+from collections import defaultdict
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+class OrderState(Enum):
+    PENDING = "pending"
+    PARTIALLY_FILLED = "partially_filled"
+    FILLED = "filled"
+    CANCELED = "canceled"
+    EXPIRED = "expired"
+
+
+@dataclass
+class CachedOrder:
+    order_id: str
+    symbol: str
+    side: str          # 'buy' or 'sell'
+    order_type: str    # 'limit' or 'market'
+    amount: float
+    price: float
+    filled: float = 0.0
+    status: OrderState = OrderState.PENDING
+    created_at: float = field(default_factory=time.time)
+    strategy_id: int = 0
+    purpose: str = ""  # 'initial_entry', 'tp', 'grid_add', 'stop_loss'
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in (OrderState.PENDING, OrderState.PARTIALLY_FILLED)
+
+    @property
+    def is_done(self) -> bool:
+        return self.status in (OrderState.FILLED, OrderState.CANCELED, OrderState.EXPIRED)
+
+
+class OrderTracker:
+    """Tracks exchange orders in memory with fast per-strategy lookups.
+
+    Reduces exchange API calls. Batch checks all pending orders per tick.
+    """
+
+    def __init__(self):
+        self._orders: dict[str, CachedOrder] = {}
+        self._by_strategy: dict[int, set[str]] = defaultdict(set)
+
+    def add(self, order_id: str, symbol: str, side: str, order_type: str,
+            amount: float, price: float, strategy_id: int, purpose: str):
+        """Register a new order in the tracker."""
+        co = CachedOrder(
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            amount=amount,
+            price=price,
+            strategy_id=strategy_id,
+            purpose=purpose,
+        )
+        self._orders[order_id] = co
+        self._by_strategy[strategy_id].add(order_id)
+
+    def get(self, order_id: str) -> Optional[CachedOrder]:
+        return self._orders.get(order_id)
+
+    def get_active_for_strategy(self, strategy_id: int) -> list[CachedOrder]:
+        """Get all active (not done) orders for a strategy."""
+        ids = self._by_strategy.get(strategy_id, set())
+        return [self._orders[oid] for oid in ids if oid in self._orders and self._orders[oid].is_active]
+
+    def get_pending_by_purpose(self, strategy_id: int, purpose: str) -> list[CachedOrder]:
+        """Get pending orders of a specific purpose (e.g., 'tp', 'grid_add')."""
+        return [
+            o for o in self.get_active_for_strategy(strategy_id)
+            if o.purpose == purpose and o.status == OrderState.PENDING
+        ]
+
+    async def check_order(self, exchange, order_id: str, symbol: str) -> Optional[CachedOrder]:
+        """Check a single order's status from exchange and update cache. Returns updated CachedOrder."""
+        co = self._orders.get(order_id)
+        if not co:
+            return None
+        try:
+            raw = await exchange.fetch_order(order_id, symbol)
+        except Exception as e:
+            logger.debug("fetch_order %s failed: %s", order_id, e)
+            return co
+
+        status_str = (raw.get("status") or "").lower()
+        co.filled = float(raw.get("filled", 0) or 0)
+        if status_str in ("closed", "filled"):
+            co.status = OrderState.FILLED
+        elif status_str in ("canceled", "cancelled"):
+            co.status = OrderState.CANCELED
+        elif status_str in ("expired"):
+            co.status = OrderState.EXPIRED
+        elif status_str == "open" and co.filled > 0:
+            co.status = OrderState.PARTIALLY_FILLED
+        return co
+
+    async def check_all_pending(self, exchange, strategy_id: int) -> dict[str, CachedOrder]:
+        """Check all pending orders for a strategy. Returns dict of order_id -> updated CachedOrder."""
+        updated = {}
+        for o in self.get_active_for_strategy(strategy_id):
+            result = await self.check_order(exchange, o.order_id, o.symbol)
+            if result:
+                updated[o.order_id] = result
+        return updated
+
+    def get_filled(self, strategy_id: int, purpose: Optional[str] = None) -> list[CachedOrder]:
+        """Get recently filled orders for a strategy."""
+        ids = self._by_strategy.get(strategy_id, set())
+        result = []
+        for oid in ids:
+            o = self._orders.get(oid)
+            if o and o.status == OrderState.FILLED:
+                if purpose is None or o.purpose == purpose:
+                    result.append(o)
+        return result
+
+    def remove_done(self, strategy_id: int, min_age_seconds: float = 3600):
+        """Remove old filled/canceled orders from memory to prevent leaks."""
+        now = time.time()
+        ids = self._by_strategy.get(strategy_id, set())
+        to_remove = set()
+        for oid in ids:
+            o = self._orders.get(oid)
+            if o and o.is_done and (now - o.created_at) > min_age_seconds:
+                to_remove.add(oid)
+        for oid in to_remove:
+            self._orders.pop(oid, None)
+            self._by_strategy[strategy_id].discard(oid)
+
+    def clear_strategy(self, strategy_id: int):
+        """Remove all tracked orders for a strategy."""
+        ids = self._by_strategy.pop(strategy_id, set())
+        for oid in ids:
+            self._orders.pop(oid, None)
+
+
+# Singleton
+order_tracker = OrderTracker()

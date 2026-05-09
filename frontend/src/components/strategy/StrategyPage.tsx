@@ -15,12 +15,16 @@ export default function StrategyPage() {
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
 
   const load = async () => {
-    const [s, a] = await Promise.all([
-      api.listStrategies(undefined, selectedAccountId ?? undefined),
-      api.listAccounts()
-    ]);
-    setStrategies(s);
-    setAccounts(a);
+    try {
+      const [s, a] = await Promise.all([
+        api.listStrategies(undefined, selectedAccountId ?? undefined),
+        api.listAccounts(),
+      ]);
+      setStrategies(s);
+      setAccounts(a);
+    } catch {
+      // silently ignore load errors — data stays stale, user can retry
+    }
   };
 
   useEffect(() => { load(); }, [selectedAccountId]);
@@ -28,28 +32,26 @@ export default function StrategyPage() {
   const handleStart = async (id: number) => {
     try {
       await api.startStrategy(id);
-      load();
     } catch (e: any) {
       alert('启动失败: ' + (e.message || '未知错误'));
     }
+    load();
   };
 
   const handleStop = async (id: number) => {
-    await api.stopStrategy(id);
+    try {
+      await api.stopStrategy(id);
+    } catch (e: any) {
+      alert('停止失败: ' + (e.message || '未知错误'));
+    }
     load();
   };
 
   const handlePanicClose = async (id: number) => {
-    if (!confirm('⚠️ 确认紧急平仓？\n\n将以市价单平掉该策略对应账户的所有交易所持仓，此操作不可撤销。')) return;
+    if (!confirm('确认紧急平仓？将以市价单平掉该策略对应账户的所有交易所持仓。')) return;
     try {
       const result = await api.panicCloseStrategy(id);
-      const msgs: string[] = [];
-      if (result.results?.length) {
-        for (const r of result.results) {
-          msgs.push(`${r.symbol} ${r.side} — ${r.status === 'ok' ? '已平仓 ✓' : '失败: ' + r.error}`);
-        }
-      }
-      alert(`平仓完成: ${result.closed} 成功, ${result.failed || 0} 失败\n\n${msgs.join('\n')}`);
+      alert(`平仓完成: ${result.closed} 成功, ${result.failed || 0} 失败`);
     } catch (e: any) {
       alert('平仓失败: ' + (e.message || e));
     }
@@ -60,21 +62,25 @@ export default function StrategyPage() {
     if (!confirm('确定要删除该策略吗？')) return;
     try {
       await api.deleteStrategy(id);
-      load();
     } catch (e: any) {
       alert(e.message);
     }
+    load();
   };
 
   const handleSubmit = async (data: any) => {
-    if (editing) {
-      await api.updateStrategy(editing.id, data);
-    } else {
-      await api.createStrategy(data);
+    try {
+      if (editing) {
+        await api.updateStrategy(editing.id, data);
+      } else {
+        await api.createStrategy(data);
+      }
+      setShowForm(false);
+      setEditing(null);
+      load();
+    } catch (e: any) {
+      alert((editing ? '更新' : '创建') + '策略失败: ' + (e.message || '未知错误'));
     }
-    setShowForm(false);
-    setEditing(null);
-    load();
   };
 
   return (
@@ -144,39 +150,20 @@ export default function StrategyPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-xs text-gray-400">
-              <div>交易对: <span className="text-gray-200">{s.symbol || '选币池自动'}</span></div>
-              <div>K线周期: <span className="text-gray-200">{s.timeframe}</span></div>
-              {s.signal_source === 'wavetrend' ? (
-                <div>WT参数: <span className="text-gray-200">通道{s.wt_channel_length} 均线{s.wt_average_length}</span></div>
-              ) : (
-                <div>RSI周期: <span className="text-gray-200">{s.rsi_period}</span></div>
-              )}
-              <div>信号: <span className="text-gray-200">{s.signal_source === 'wavetrend' ? 'WaveTrend' : `RSI ${s.direction === 'long' ? '<' : '>'} ${s.rsi_entry_threshold}`}</span></div>
-              <div>首单仓位: <span className="text-gray-200">{s.base_qty_type === 'margin_pct' ? `保证金${s.base_qty_value}%` : `${s.base_qty_value} USDT`}</span></div>
-              <div>加仓倍数: <span className="text-gray-200">x{s.martingale_mult}</span></div>
+              <div>交易对: <span className="text-gray-200">{s.symbol}</span></div>
+              <div>首单: <span className="text-gray-200">{s.base_qty_type === 'margin_pct' ? `${s.base_qty_value}%保证金` : `${s.base_qty_value}U`}</span></div>
+              <div>杠杆: <span className="text-gray-200">{s.leverage}x</span></div>
+              <div>首层跌幅: <span className="text-gray-200">{s.grid_drop_base_pct}%</span></div>
+              <div>层级倍数: <span className="text-gray-200">x{s.grid_interval_multiplier} / x{s.position_multiplier}</span></div>
               <div>最大层数: <span className="text-gray-200">{s.max_layers}</span></div>
-              <div>跌幅触发: <span className="text-gray-200">{s.price_drop_pct}%</span></div>
-              <div>止盈: <span className="text-gray-200">{s.take_profit_pct}% {s.take_profit_limit_order ? '(限价单)' : '(市价单)'}</span></div>
-              <div>止损: <span className="text-gray-200">{s.stop_loss_enabled ? `${s.stop_loss_pct}%` : '已禁用'}</span></div>
-              <div>保证金阈值: <span className="text-gray-200">{s.margin_threshold} USDT</span></div>
-              <div>选币池刷新: <span className="text-gray-200">{Math.round(s.coin_pool_refresh_seconds / 60)}分钟</span></div>
-              <div>TradFi过滤: <span className={s.exclude_tradefi ? 'text-amber-400' : 'text-gray-500'}>{s.exclude_tradefi ? '已排除股票永续' : '未排除'}</span></div>
-              {s.last_rsi != null && (
-                <div className="col-span-2 mt-1 pt-1 border-t border-gray-800">
-                  <span className="text-gray-500">最近信号: </span>
-                  <span className={s.last_signal === 'long' ? 'text-green-400' : s.last_signal === 'short' ? 'text-red-400' : 'text-gray-400'}>
-                    {s.signal_source === 'wavetrend' ? 'WT1' : 'RSI'} {s.last_rsi} → {s.last_signal === 'long' ? '做多' : s.last_signal === 'short' ? '做空' : '无信号'}
-                  </span>
-                  {s.last_signal_at && (
-                    <span className="text-gray-600 ml-2">{new Date(s.last_signal_at).toLocaleTimeString()}</span>
-                  )}
-                </div>
-              )}
+              <div>止盈: <span className="text-gray-200">{s.tp_pct}%</span></div>
+              <div>止损阈值: <span className="text-gray-200">{s.cumulative_loss_threshold_u > 0 ? `${s.cumulative_loss_threshold_u}U` : '禁用'}</span></div>
+              <div>平仓重开: <span className="text-gray-200">{s.reopen_after_close ? '是' : '否'}</span></div>
             </div>
           </div>
         ))}
         {strategies.length === 0 && (
-          <div className="col-span-2 text-center text-gray-600 py-8">暂无策略，点击"新建策略"开始</div>
+          <div className="col-span-2 text-center text-gray-600 py-8">暂无策略</div>
         )}
       </div>
     </div>

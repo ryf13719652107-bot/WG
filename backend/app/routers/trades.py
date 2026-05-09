@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 @router.get("", response_model=TradeListResponse)
 async def list_trades(
     symbol: str | None = None,
+    side: str | None = None,  # 'long' or 'short'
     strategy_id: int | None = None,
     account_id: int | None = None,
     limit: int = Query(default=50, le=500),
@@ -26,6 +27,10 @@ async def list_trades(
     if symbol:
         stmt = stmt.where(Trade.symbol == symbol)
         count_stmt = count_stmt.where(Trade.symbol == symbol)
+
+    if side:
+        stmt = stmt.where(Trade.side == side)
+        count_stmt = count_stmt.where(Trade.side == side)
 
     if strategy_id is not None:
         stmt = stmt.where(Trade.strategy_id == strategy_id)
@@ -58,8 +63,21 @@ async def delete_trade(trade_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("", status_code=204)
-async def delete_all_trades(db: AsyncSession = Depends(get_db)):
-    await db.execute(delete(Trade))
+async def delete_filtered_trades(
+    symbol: str | None = None,
+    side: str | None = None,
+    account_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete trades matching filters. If no filters provided, deletes ALL."""
+    stmt = delete(Trade)
+    if symbol:
+        stmt = stmt.where(Trade.symbol == symbol)
+    if side:
+        stmt = stmt.where(Trade.side == side)
+    if account_id is not None:
+        stmt = stmt.where(Trade.account_id == account_id)
+    await db.execute(stmt)
     await db.commit()
 
 

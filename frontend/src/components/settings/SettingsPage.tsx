@@ -6,7 +6,7 @@ import { Key, Trash2, Plus, Shield, AlertCircle } from 'lucide-react';
 export default function SettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: '', api_key: '', api_secret: '', testnet: true, hedge_mode: true });
+  const [form, setForm] = useState({ name: '', exchange: 'binance', api_key: '', api_secret: '', okx_passphrase: '', testnet: true, hedge_mode: true });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -35,7 +35,7 @@ export default function SettingsPage() {
     try {
       await api.createAccount(form);
       setShowForm(false);
-      setForm({ name: '', api_key: '', api_secret: '', testnet: true, hedge_mode: true });
+      setForm({ name: '', exchange: 'binance', api_key: '', api_secret: '', okx_passphrase: '', testnet: true, hedge_mode: true });
       await load();
     } catch (e: any) {
       setSaveError(`保存失败: ${e.message}`);
@@ -59,7 +59,7 @@ export default function SettingsPage() {
       <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
           <Key size={16} className="text-yellow-400" />
-          币安API密钥管理
+          交易所API密钥管理
         </h3>
 
         {error && (
@@ -77,6 +77,9 @@ export default function SettingsPage() {
               <span className={`ml-2 text-xs px-2 py-0.5 rounded ${a.testnet ? 'bg-yellow-600/20 text-yellow-400' : 'bg-green-600/20 text-green-400'}`}>
                 {a.testnet ? '测试网' : '实盘'}
               </span>
+              <span className="ml-1 text-xs px-2 py-0.5 rounded bg-purple-600/20 text-purple-400">
+                {(a as any).exchange === 'okx' ? 'OKX' : '币安'}
+              </span>
               <span className={`ml-1 text-xs px-2 py-0.5 rounded ${a.hedge_mode ? 'bg-blue-600/20 text-blue-400' : 'bg-purple-600/20 text-purple-400'}`}>
                 {a.hedge_mode ? '双向持仓' : '单向持仓'}
               </span>
@@ -91,7 +94,7 @@ export default function SettingsPage() {
         ))}
 
         {!loading && accounts.length === 0 && !error && (
-          <p className="text-gray-600 text-sm py-2">暂无账户，请添加币安API密钥</p>
+          <p className="text-gray-600 text-sm py-2">暂无账户，请添加交易所API密钥</p>
         )}
 
         {!showForm && (
@@ -110,6 +113,14 @@ export default function SettingsPage() {
                 <AlertCircle size={14} /> {saveError}
               </div>
             )}
+            <select
+              value={form.exchange}
+              onChange={(e) => setForm({ ...form, exchange: e.target.value })}
+              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm"
+            >
+              <option value="binance">币安 Binance</option>
+              <option value="okx">OKX</option>
+            </select>
             <input
               placeholder="账户名称"
               value={form.name}
@@ -130,6 +141,15 @@ export default function SettingsPage() {
               onChange={(e) => setForm({ ...form, api_secret: e.target.value })}
               className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm"
             />
+            {form.exchange === 'okx' && (
+              <input
+                type="password"
+                placeholder="OKX Passphrase（OKX必填）"
+                value={form.okx_passphrase}
+                onChange={(e) => setForm({ ...form, okx_passphrase: e.target.value })}
+                className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm"
+              />
+            )}
             <label className="flex items-center gap-2 text-sm text-gray-400">
               <input
                 type="checkbox"
