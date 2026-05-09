@@ -199,6 +199,23 @@ class OkxService(BaseExchangeService):
             reduce_only=True, position_side=position_side,
         )
 
+    async def set_leverage(self, symbol: str, leverage: int) -> None:
+        """Set leverage for a symbol on OKX."""
+        formatted = self._format_symbol(symbol)
+        try:
+            await retry_with_backoff(
+                "okx.set_leverage",
+                lambda: self.exchange.set_leverage(leverage, formatted, params={"mgnMode": "isolated"}),
+            )
+        except Exception as e:
+            try:
+                await retry_with_backoff(
+                    "okx.set_leverage_cross",
+                    lambda: self.exchange.set_leverage(leverage, formatted, params={"mgnMode": "cross"}),
+                )
+            except Exception as e2:
+                logger.warning("OKX set_leverage(%s, %d) failed: %s / %s", symbol, leverage, e, e2)
+
     # ---- WebSocket ----
 
     async def watch_tickers(self, symbols: Optional[list[str]] = None):

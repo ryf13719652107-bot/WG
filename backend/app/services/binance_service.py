@@ -258,6 +258,17 @@ class BinanceService(BaseExchangeService):
                 )
             raise
 
+    async def set_leverage(self, symbol: str, leverage: int) -> None:
+        """Set leverage for a symbol on Binance USDM Futures."""
+        formatted = self._format_symbol(symbol)
+        try:
+            await retry_with_backoff(
+                "binance.set_leverage",
+                lambda: self.exchange.set_leverage(leverage, formatted),
+            )
+        except Exception as e:
+            logger.warning("Binance set_leverage(%s, %d) failed: %s", symbol, leverage, e)
+
     # ---- WebSocket ----
 
     async def watch_tickers(self, symbols: Optional[list[str]] = None):

@@ -156,6 +156,29 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
     if not exchange:
         raise HTTPException(status_code=404, detail="Exchange service not available")
 
+    # Cancel all pending orders for this strategy before closing
+    from ..services.order_tracker import order_tracker
+    active_orders = order_tracker.get_active_for_strategy(strategy_id)
+    for o in active_orders:
+        try:
+            await exchange.cancel_order(o.order_id, o.symbol)
+        except Exception:
+            pass
+    order_tracker.clear_strategy(strategy_id)
+
+    # Also cancel exchange open orders for this symbol
+    try:
+        open_orders = await exchange.fetch_open_orders(strategy.symbol)
+        for oo in open_orders:
+            oid = str(oo.get("id", ""))
+            if oid:
+                try:
+                    await exchange.cancel_order(oid, strategy.symbol)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     try:
         raw_positions = await exchange.fetch_positions()
     except Exception as e:

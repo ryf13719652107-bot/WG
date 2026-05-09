@@ -123,6 +123,10 @@ class BaseExchangeService(ABC):
     async def close_position(self, symbol: str, side: str) -> dict:
         """Close all positions for symbol+side. Returns order dict."""
 
+    @abstractmethod
+    async def set_leverage(self, symbol: str, leverage: int) -> None:
+        """Set leverage for a symbol on the exchange."""
+
     # ---- WebSocket (Public) ----
 
     @abstractmethod

@@ -75,10 +75,13 @@ class OrderTracker:
         return [self._orders[oid] for oid in ids if oid in self._orders and self._orders[oid].is_active]
 
     def get_pending_by_purpose(self, strategy_id: int, purpose: str) -> list[CachedOrder]:
-        """Get pending orders of a specific purpose (e.g., 'tp', 'grid_add')."""
+        """Get active orders of a specific purpose (e.g., 'tp', 'grid_add').
+
+        Includes both PENDING and PARTIALLY_FILLED orders.
+        """
         return [
             o for o in self.get_active_for_strategy(strategy_id)
-            if o.purpose == purpose and o.status == OrderState.PENDING
+            if o.purpose == purpose
         ]
 
     async def check_order(self, exchange, order_id: str, symbol: str) -> Optional[CachedOrder]:
@@ -94,6 +97,9 @@ class OrderTracker:
 
         status_str = (raw.get("status") or "").lower()
         co.filled = float(raw.get("filled", 0) or 0)
+        avg_price = float(raw.get("average", 0) or 0)
+        if avg_price > 0:
+            co.price = avg_price
         if status_str in ("closed", "filled"):
             co.status = OrderState.FILLED
         elif status_str in ("canceled", "cancelled"):

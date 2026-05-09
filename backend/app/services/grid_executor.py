@@ -31,6 +31,17 @@ class GridExecutor:
         self.engine = engine
         self.sl_manager = StopLossManager(threshold_u=engine.loss_threshold)
 
+    @staticmethod
+    def _round_qty(qty: float) -> float:
+        """Round quantity to reasonable precision for exchange order."""
+        if qty <= 0:
+            return 0.0
+        if qty >= 1:
+            return round(qty, 4)
+        if qty >= 0.01:
+            return round(qty, 6)
+        return round(qty, 8)
+
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
     ) -> None:
@@ -79,7 +90,7 @@ class GridExecutor:
             return  # positions updated
 
         # Check cumulative stop loss
-        sl_triggered = await self._check_stop_loss(session, strategy, symbol, exchange, open_positions, current_price)
+        sl_triggered = await self._check_stop_loss(session, strategy, symbol, exchange, open_positions, current_price, cumulative_u)
         if sl_triggered:
             return
 
@@ -90,8 +101,8 @@ class GridExecutor:
         side_raw = "buy" if strategy.direction == "long" else "sell"
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
 
-        # Calculate margin-based quantity if needed
-        qty = self.engine.base_qty
+        # Calculate position quantity
+        qty = 0.0
         if strategy.base_qty_type == "margin_pct":
             try:
                 balance = await exchange.fetch_balance()
@@ -101,7 +112,26 @@ class GridExecutor:
                 if current_price > 0:
                     qty = (margin_usdt * lev) / current_price
             except Exception as e:
-                logger.warning("Failed to calculate margin-based qty: %s, using base qty", e)
+                logger.warning("Failed to calculate margin-based qty: %s", e)
+                return
+        else:
+            if current_price > 0:
+                qty = (strategy.base_qty_value * self.engine.leverage) / current_price
+            else:
+                logger.error("Cannot calculate qty: current_price is 0")
+                return
+
+        if qty <= 0:
+            logger.error("Calculated qty is 0 for strategy %d", strategy.id)
+            return
+
+        qty = self._round_qty(qty)
+
+        # 0. Set leverage on exchange before opening
+        try:
+            await exchange.set_leverage(symbol, self.engine.leverage)
+        except Exception as e:
+            logger.warning("Failed to set leverage for %s: %s (continuing)", symbol, e)
 
         # 1. Market open initial position
         try:
@@ -172,19 +202,44 @@ class GridExecutor:
         add_side = "buy" if strategy.direction == "long" else "sell"
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
 
+        raw_size = grid_level.quantity
+        trigger_price = grid_level.trigger_price
+        if trigger_price <= 0:
+            logger.error("Grid add trigger_price is 0 for strategy %d level %d", strategy.id, grid_level.level)
+            return None
+
+        qty = 0.0
+        if strategy.base_qty_type == "margin_pct":
+            try:
+                balance = await exchange.fetch_balance()
+                total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
+                margin_usdt = total_usdt * (raw_size / 100.0)
+                qty = (margin_usdt * self.engine.leverage) / trigger_price
+            except Exception as e:
+                logger.warning("Failed to calculate margin-based grid add qty: %s", e)
+                return None
+        else:
+            qty = (raw_size * self.engine.leverage) / trigger_price
+
+        if qty <= 0:
+            logger.error("Grid add qty is 0 for strategy %d level %d", strategy.id, grid_level.level)
+            return None
+
+        qty = self._round_qty(qty)
+
         try:
             order = await exchange.create_limit_order(
-                symbol, add_side, grid_level.quantity, grid_level.trigger_price,
+                symbol, add_side, qty, trigger_price,
                 reduce_only=False, position_side=position_side,
             )
             order_id = str(order.get("id", ""))
             order_tracker.add(
                 order_id, symbol, add_side, "limit",
-                grid_level.quantity, grid_level.trigger_price, strategy.id, "grid_add",
+                qty, trigger_price, strategy.id, "grid_add",
             )
             logger.info(
-                "Grid add placed: %s lv=%d qty=%.4f trigger=%.4f",
-                symbol, grid_level.level, grid_level.quantity, grid_level.trigger_price,
+                "Grid add placed: %s lv=%d qty=%.4f trigger=%.4f (raw_size=%.4f)",
+                symbol, grid_level.level, qty, trigger_price, raw_size,
             )
             return order_id
         except Exception as e:
@@ -208,8 +263,8 @@ class GridExecutor:
         # TP filled → close all positions
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, "take_profit")
 
-        # Reopen initial if configured; otherwise stop the strategy
-        if strategy.reopen_after_close:
+        # Reopen initial if configured and strategy still running; otherwise stop
+        if strategy.reopen_after_close and strategy.status == "running":
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy.status = "stopped"
@@ -232,18 +287,24 @@ class GridExecutor:
             side = strategy.direction
             position_side = "LONG" if side == "long" else "SHORT"
 
+            filled_qty = float(updated.filled) if updated.filled > 0 else float(o.amount)
+            fill_price = float(updated.price) if updated.price > 0 else float(o.price)
+
+            max_level = max((p.grid_level for p in positions), default=0)
+            next_level = max_level + 1
+
             pos = Position(
                 strategy_id=strategy.id,
                 account_id=strategy.account_id,
                 symbol=symbol,
                 side=side,
-                quantity=o.amount,
-                entry_price=o.price,
+                quantity=filled_qty,
+                entry_price=fill_price,
                 mark_price=current_price,
-                layer=len(positions),  # next layer
-                grid_level=len(positions),
+                layer=next_level,
+                grid_level=next_level,
                 exchange_order_id=o.order_id,
-                grid_trigger_price=o.price,
+                grid_trigger_price=fill_price,
             )
             session.add(pos)
             await session.commit()
@@ -251,7 +312,7 @@ class GridExecutor:
             positions.append(pos)
             any_filled = True
 
-            logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, len(positions) - 1, o.amount, o.price)
+            logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, len(positions) - 1, filled_qty, fill_price)
 
             # Cancel old TP order
             await self._cancel_tp_orders(session, strategy, symbol, exchange, positions)
@@ -298,7 +359,7 @@ class GridExecutor:
                 except Exception as e:
                     logger.debug("Cancel TP order %s: %s", o.order_id, e)
 
-    async def _check_stop_loss(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
+    async def _check_stop_loss(self, session, strategy, symbol, exchange, positions, current_price, cumulative_u: float) -> bool:
         """Check per-strategy cumulative unrealized loss with multi-level stop loss.
 
         Calculates total floating PnL across all layers of this strategy.
@@ -306,8 +367,6 @@ class GridExecutor:
         HARD (100%): close all + reopen
         PANIC (single layer >50% loss): close all + reopen
         """
-        cumulative_u = self.engine.calculate_cumulative_loss(positions, current_price)
-
         decision = self.sl_manager.evaluate(cumulative_u, positions, current_price)
 
         if decision.level == StopLossLevel.NONE:
@@ -348,7 +407,7 @@ class GridExecutor:
 
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, close_reason)
 
-        if strategy.reopen_after_close:
+        if strategy.reopen_after_close and strategy.status == "running":
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy.status = "stopped"
@@ -368,10 +427,18 @@ class GridExecutor:
                     pass
 
         # Market close all
+        close_success = False
         try:
-            await exchange.close_position(symbol, strategy.direction)
+            result = await exchange.close_position(symbol, strategy.direction)
+            if result:
+                close_success = True
         except Exception as e:
-            logger.error("Failed to close position for %s %s: %s", strategy.id, symbol, e)
+            logger.error("Failed to close position for strategy=%d %s: %s", strategy.id, symbol, e)
+            strategy_log_service.error(strategy.id, f"交易所平仓失败: {e}")
+
+        if not close_success:
+            logger.warning("Exchange close failed for strategy=%d %s — still recording DB close", strategy.id, symbol)
+            strategy_log_service.warning(strategy.id, "交易所平仓失败，本地记录已关闭，请手动检查交易所持仓")
 
         # Record trades for each position
         now = now_beijing()
@@ -405,4 +472,4 @@ class GridExecutor:
 
         await session.commit()
         order_tracker.clear_strategy(strategy.id)
-        logger.info("Closed all %s positions for strategy=%d reason=%s", symbol, strategy.id, reason)
+        logger.info("Closed all %s positions for strategy=%d reason=%s exchange_ok=%s", symbol, strategy.id, reason, close_success)
