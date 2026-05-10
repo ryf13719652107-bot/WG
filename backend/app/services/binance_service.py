@@ -348,8 +348,8 @@ class BinanceService(BaseExchangeService):
             ),
         )
 
-    async def cancel_all_open_algo_orders(self, symbol: str) -> int:
-        """Cancel every open USD-M conditional (algo) order for this raw symbol."""
+    async def fetch_open_algo_orders(self, symbol: str) -> list:
+        """List open USD-M conditional (algo) orders for this symbol."""
         formatted = self._format_symbol(symbol)
         sym_rest = formatted.replace("/", "").replace(":USDT", "")
         raw = await retry_with_backoff(
@@ -361,12 +361,16 @@ class BinanceService(BaseExchangeService):
                 {"symbol": sym_rest},
             ),
         )
-        rows = []
         if isinstance(raw, list):
-            rows = raw
-        elif isinstance(raw, dict):
+            return raw
+        if isinstance(raw, dict):
             inner = raw.get("orders") or raw.get("data") or []
-            rows = inner if isinstance(inner, list) else []
+            return inner if isinstance(inner, list) else []
+        return []
+
+    async def cancel_all_open_algo_orders(self, symbol: str) -> int:
+        """Cancel every open USD-M conditional (algo) order for this raw symbol."""
+        rows = await self.fetch_open_algo_orders(symbol)
         n = 0
         tasks = []
         for row in rows:

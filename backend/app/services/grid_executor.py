@@ -218,7 +218,10 @@ class GridExecutor:
             )
         except Exception as e:
             logger.error("%s SL failed strategy=%s: %s", log_label, strategy.id, e)
-            strategy_log_service.warning(strategy.id, f"{log_label}失败: {e} (将使用浮亏监控止损)")
+            strategy_log_service.warning(
+                strategy.id,
+                f"{log_label}失败: {e}（请检查持仓与保证金；下一周期或加仓更新时会再尝试挂止损）",
+            )
 
     def _schedule_feishu(self, strategy, title: str, body_lines: list[str]) -> None:
         """非阻塞推送飞书（未配置 webhook 时自动跳过）。"""

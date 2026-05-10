@@ -71,7 +71,38 @@ class StrategyScheduler:
                         if oid and amount > 0:
                             purpose = "tp" if side != s.direction.lower() else "grid_add"
                             order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
-                    logger.info("Strategy %d: restored %d orders to tracker", s.id, len(open_orders or []))
+                    n_open = len(open_orders or [])
+                    n_algo_sl = 0
+                    if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0:
+                        try:
+                            algo_rows = await exchange.fetch_open_algo_orders(s.symbol)
+                        except Exception as e:
+                            logger.debug("Strategy %d: fetch_open_algo_orders: %s", s.id, e)
+                            algo_rows = []
+                        for row in algo_rows or []:
+                            typ = str(row.get("type") or row.get("orderType") or "").upper()
+                            if "STOP" not in typ:
+                                continue
+                            aid = str(row.get("algoId") or "")
+                            if not aid:
+                                continue
+                            side_a = str(row.get("side") or "").lower()
+                            if side_a not in ("buy", "sell"):
+                                continue
+                            qty = float(row.get("origQty") or row.get("quantity") or row.get("qty") or 0)
+                            trig = float(row.get("triggerPrice") or row.get("stopPrice") or 0)
+                            if qty <= 0:
+                                qty = float(row.get("executedQty") or row.get("cumQty") or 0)
+                            if qty <= 0:
+                                continue
+                            order_tracker.add(aid, s.symbol, side_a, "stop", qty, trig, s.id, "stop_loss")
+                            n_algo_sl += 1
+                    logger.info(
+                        "Strategy %d: restored %d open orders + %d algo stop orders to tracker",
+                        s.id,
+                        n_open,
+                        n_algo_sl,
+                    )
                 except Exception as e:
                     logger.warning("Strategy %d: failed to restore orders: %s", s.id, e)
             self._engines[s.id] = GridStrategyEngine(s)
@@ -335,6 +366,13 @@ class StrategyScheduler:
 
             if exchange:
                 try:
+                    ex_id = getattr(exchange, "exchange_id", "") or ""
+                    if ex_id == "okx" and hasattr(exchange, "cancel_all_pending_orders_for_symbol"):
+                        try:
+                            await exchange.cancel_all_pending_orders_for_symbol(symbol)
+                        except Exception as e:
+                            logger.warning("Strategy %d stop: OKX cancel_all_pending: %s", strategy_id, e)
+
                     open_orders = await exchange.fetch_open_orders(symbol)
                     cancel_tasks = []
                     for oo in (open_orders or []):
@@ -345,6 +383,14 @@ class StrategyScheduler:
                         results = await asyncio.gather(*cancel_tasks, return_exceptions=True)
                         success = sum(1 for r in results if not isinstance(r, Exception))
                         logger.info("Strategy %d stopped: cancelled %d/%d orders on exchange", strategy_id, success, len(cancel_tasks))
+
+                    if hasattr(exchange, "cancel_all_open_algo_orders"):
+                        try:
+                            n_algo = await exchange.cancel_all_open_algo_orders(symbol)
+                            if n_algo:
+                                logger.info("Strategy %d stopped: cancelled %d open algo orders", strategy_id, n_algo)
+                        except Exception as e:
+                            logger.warning("Strategy %d stop: cancel_all_open_algo_orders: %s", strategy_id, e)
                 except Exception as e:
                     logger.warning("Strategy %d stop: failed to cancel orders: %s", strategy_id, e)
 

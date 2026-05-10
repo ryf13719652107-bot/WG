@@ -187,6 +187,10 @@ class BaseExchangeService(ABC):
         except (TypeError, ValueError):
             return 0.0
 
+    async def fetch_open_algo_orders(self, symbol: str) -> list:
+        """Open conditional (algo) orders for this symbol. Default empty; Binance USD-M overrides."""
+        return []
+
     # ---- WebSocket (Public) ----
 
     @abstractmethod

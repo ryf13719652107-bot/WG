@@ -15,7 +15,7 @@ class GridLevel:
 
 
 class GridStrategyEngine:
-    """Calculates grid levels, TP prices, and cumulative PnL for martingale grid strategy.
+    """Calculates grid levels, TP prices, and stop trigger price for martingale grid strategy.
 
     Rules:
     - Initial open: immediately at strategy start (market order)
@@ -26,7 +26,7 @@ class GridStrategyEngine:
       Level N: base_price * (1 - sum of intervals)
       where interval_n = drop_base_pct * interval_multiplier^(n-1)
     - Position sizing: level_n = base_qty * position_multiplier^n
-    - Stop loss: per-strategy cumulative U loss threshold
+    - Stop loss: optional exchange algo order sized by fixed USDT loss (cumulative_loss_threshold_u)
     """
 
     def __init__(self, strategy):
