@@ -96,15 +96,37 @@ class OrderTracker:
             return co
 
         status_str = (raw.get("status") or "").lower()
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        if isinstance(info, dict):
+            st2 = str(info.get("state") or info.get("ordStatus") or "").lower()
+            if st2 and st2 not in ("none", "null"):
+                if not status_str or status_str in ("open", "live"):
+                    status_str = st2
         co.filled = float(raw.get("filled", 0) or 0)
         avg_price = float(raw.get("average", 0) or 0)
         if avg_price > 0:
             co.price = avg_price
-        if status_str in ("closed", "filled"):
+        amount = float(raw.get("amount", 0) or 0) or float(co.amount or 0)
+        try:
+            rem_raw = raw.get("remaining")
+            rem = float(rem_raw) if rem_raw is not None and rem_raw != "" else None
+        except (TypeError, ValueError):
+            rem = None
+
+        filled_done = status_str in ("closed", "filled")
+        if not filled_done and amount > 1e-16:
+            if co.filled >= amount * 0.998:
+                filled_done = True
+            if rem is not None and rem <= max(amount * 0.002, 1e-12) and co.filled > 0:
+                filled_done = True
+        if isinstance(info, dict) and str(info.get("state", "")).lower() == "filled":
+            filled_done = True
+
+        if filled_done:
             co.status = OrderState.FILLED
         elif status_str in ("canceled", "cancelled"):
             co.status = OrderState.CANCELED
-        elif status_str in ("expired"):
+        elif status_str in ("expired",):
             co.status = OrderState.EXPIRED
         elif status_str == "open" and co.filled > 0:
             co.status = OrderState.PARTIALLY_FILLED

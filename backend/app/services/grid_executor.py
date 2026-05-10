@@ -209,6 +209,10 @@ class GridExecutor:
         result = await session.execute(stmt)
         open_positions = list(result.scalars().all())
 
+        # OKX 曾仅依赖 REST 轮询时 order 状态更新滞后；每 tick 拉一次挂单状态与 WS 互补（请求量仍低）
+        if getattr(exchange, "exchange_id", "") == "okx":
+            await order_tracker.check_all_pending(exchange, strategy.id)
+
         if not open_positions:
             await self._open_initial(session, strategy, symbol, exchange, current_price)
             return

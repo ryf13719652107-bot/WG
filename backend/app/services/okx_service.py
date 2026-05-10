@@ -290,7 +290,7 @@ class OkxService(BaseExchangeService):
         total = 0.0
         for pos in positions:
             if BaseExchangeService.position_row_matches_leg(pos, symbol, side.lower(), formatted):
-                total += float(pos.get("contracts", 0) or 0)
+                total += BaseExchangeService.position_row_contracts_abs(pos)
 
         if total <= 0:
             logger.warning("OKX close_position: no contracts for %s %s", symbol, side)
@@ -322,12 +322,16 @@ class OkxService(BaseExchangeService):
 
     # ---- WebSocket ----
 
-    async def watch_tickers(self, symbols: Optional[list[str]] = None):
-        import ccxt.pro as ccxtpro
-        if not hasattr(self, '_ws_exchange') or self._ws_exchange is None:
+    @property
+    def ws_exchange(self):
+        """与 BinanceService 一致，供调度器 watch_orders 使用；与 watch_tickers 共用同一 WS 实例。"""
+        if not hasattr(self, "_ws_exchange") or self._ws_exchange is None:
             self._ws_exchange = self._create_ws_exchange()
+        return self._ws_exchange
+
+    async def watch_tickers(self, symbols: Optional[list[str]] = None):
         formatted = [self._format_symbol(s) for s in symbols] if symbols else None
-        return await self._ws_exchange.watch_tickers(formatted)
+        return await self.ws_exchange.watch_tickers(formatted)
 
     def _create_ws_exchange(self):
         from ..config import settings

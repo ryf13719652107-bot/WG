@@ -138,24 +138,45 @@ class StrategyScheduler:
                 if not hasattr(exchange, 'ws_exchange') or not exchange.ws_exchange:
                     await asyncio.sleep(2)
                     continue
-                orders = await exchange.ws_exchange.watch_orders(symbol)
+                ws = exchange.ws_exchange
+                ws_symbol = symbol
+                fmt = getattr(exchange, "_format_symbol", None)
+                if callable(fmt):
+                    try:
+                        ws_symbol = fmt(symbol)
+                    except Exception:
+                        ws_symbol = symbol
+                orders = await ws.watch_orders(ws_symbol)
                 consecutive_errors = 0
                 for raw in (orders if isinstance(orders, list) else [orders]):
                     oid = str(raw.get("id", "") or "")
+                    if not oid:
+                        continue
                     ws_status = (raw.get("status") or "").lower()
-                    if ws_status not in ("closed", "filled", "canceled", "cancelled"):
+                    info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+                    if isinstance(info, dict) and not ws_status:
+                        ws_status = str(info.get("state") or info.get("ordStatus") or "").lower()
+                    filled_w = float(raw.get("filled", 0) or 0)
+                    amount_w = float(raw.get("amount", 0) or 0)
+                    essentially_filled = amount_w > 1e-12 and filled_w >= amount_w * 0.998
+                    is_filled = ws_status in ("closed", "filled") or essentially_filled
+                    is_canceled = ws_status in ("canceled", "cancelled") and not essentially_filled
+                    if not is_filled and not is_canceled:
                         continue
                     co = order_tracker.get(oid)
                     if not co or co.strategy_id != strategy_id:
                         continue
-                    co.filled = float(raw.get("filled", 0) or 0) or co.filled
+                    co.filled = filled_w or co.filled
                     avg = float(raw.get("average", 0) or 0)
                     if avg > 0:
                         co.price = avg
-                    if ws_status in ("closed", "filled"):
+                    if is_filled or essentially_filled:
                         co.status = OrderState.FILLED
-                        logger.info("WS order FILLED: %s purpose=%s filled=%.4f price=%.4f for strategy %d", oid, co.purpose, co.filled, co.price, strategy_id)
-                    elif ws_status in ("canceled", "cancelled"):
+                        logger.info(
+                            "WS order FILLED: %s purpose=%s filled=%.4f price=%.4f for strategy %d",
+                            oid, co.purpose, co.filled, co.price, strategy_id,
+                        )
+                    else:
                         co.status = OrderState.CANCELED
                         logger.info("WS order CANCELED: %s for strategy %d", oid, strategy_id)
                     asyncio.create_task(self._execute_strategy(strategy_id))
