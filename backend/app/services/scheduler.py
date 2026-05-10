@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from ..database import async_session
 from ..models.strategy import Strategy
+from ..models.position import Position
 from ..models.account import Account
 from ..models.bot_config import BotConfig
 from ..config import now_beijing, BEIJING_TZ
@@ -18,6 +19,7 @@ from .grid_engine import GridStrategyEngine
 from .grid_executor import GridExecutor
 from .price_stream import price_stream
 from .health_monitor import health_monitor
+from .sync_service import position_sync_service
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +192,41 @@ class StrategyScheduler:
         )
         self._strategy_jobs[strategy_id] = job_id
 
+    async def _position_sync_tick(self):
+        """将本地未平仓记录与交易所持仓对账（每账户最多每 60 秒一次，由 sync_service 节流）。"""
+        try:
+            async with async_session() as session:
+                r = await session.execute(
+                    select(Position.account_id)
+                    .where(Position.closed_at.is_(None))
+                    .distinct()
+                )
+                account_ids = [row[0] for row in r.all()]
+        except Exception as e:
+            logger.warning("Position sync tick: load accounts failed: %s", e)
+            return
+
+        for aid in account_ids:
+            try:
+                exchange = await get_exchange_service(aid)
+                if exchange:
+                    await position_sync_service.sync(exchange, aid)
+            except Exception as e:
+                logger.warning("Position sync tick: account %s failed: %s", aid, e)
+
     def start(self):
         if not self._aps.running:
             self._aps.start()
+        if self._aps.get_job("position_sync"):
+            return
+        self._aps.add_job(
+            self._position_sync_tick,
+            "interval",
+            seconds=60,
+            id="position_sync",
+            coalesce=True,
+            max_instances=1,
+        )
 
     def stop(self):
         self._running = False
@@ -200,6 +234,11 @@ class StrategyScheduler:
             if not task.done():
                 task.cancel()
         self._order_watch_tasks.clear()
+        if self._aps.get_job("position_sync"):
+            try:
+                self._aps.remove_job("position_sync")
+            except Exception:
+                pass
         if self._aps.running:
             self._aps.shutdown(wait=False)
 

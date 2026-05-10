@@ -17,6 +17,8 @@ type DisplayRow = {
   tp_has_order: boolean;
   tp_target_only: boolean;
   opened_at_label: string;
+  /** 可调用 POST /api/positions/:id/close（交易所已平时会仅清本地） */
+  positionId?: number;
 };
 
 /** 与后端 exchange_base._norm_sym 等价 */
@@ -100,6 +102,7 @@ function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): D
           tp_has_order: !!p.tp_limit_order_id,
           tp_target_only: p.take_profit_price != null && !p.tp_limit_order_id,
           opened_at_label: p.opened_at ? new Date(p.opened_at).toLocaleString() : '-',
+          positionId: p.id,
         });
       }
     }
@@ -150,6 +153,21 @@ export default function PositionsPage() {
     [dbPositions, exchangePositions],
   );
 
+  const [clearBusyId, setClearBusyId] = useState<number | null>(null);
+
+  const clearLocalRow = async (positionId: number) => {
+    setClearBusyId(positionId);
+    try {
+      await api.closePosition(positionId);
+      await loadRef.current();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      window.alert(`清除失败：${msg}`);
+    } finally {
+      setClearBusyId(null);
+    }
+  };
+
   /** 交易所有仓但机器人库无未平仓——与删除策略后的空表区分开，仍提示对账 */
   const hasExchangeHint =
     (exchangePositions?.length ?? 0) > 0 && dbPositions.length === 0;
@@ -184,6 +202,7 @@ export default function PositionsPage() {
               <th className="p-3">限价止盈</th>
               <th className="p-3">未实现盈亏</th>
               <th className="p-3">开仓时间</th>
+              <th className="p-3 w-28">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -221,11 +240,26 @@ export default function PositionsPage() {
                   {row.unrealized_pnl.toFixed(2)} USDT
                 </td>
                 <td className="p-3 text-gray-500 text-xs">{row.opened_at_label}</td>
+                <td className="p-3">
+                  {row.positionId != null ? (
+                    <button
+                      type="button"
+                      disabled={clearBusyId === row.positionId}
+                      onClick={() => void clearLocalRow(row.positionId!)}
+                      className="text-xs px-2 py-1 rounded border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 disabled:opacity-50"
+                      title="交易所已无该持仓时写入平仓并清除本地未完成记录（若仍能查到实盘持仓会先提示失败）"
+                    >
+                      {clearBusyId === row.positionId ? '…' : '清除本地记录'}
+                    </button>
+                  ) : (
+                    <span className="text-gray-600 text-xs">—</span>
+                  )}
+                </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={8} className="p-8 text-center text-gray-600">
+                <td colSpan={9} className="p-8 text-center text-gray-600">
                   暂无持仓
                 </td>
               </tr>

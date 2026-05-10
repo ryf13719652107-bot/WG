@@ -1,14 +1,27 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
 from ..database import get_db
 from ..config import now_beijing
 from ..models.position import Position
 from ..schemas.position import PositionResponse
 from ..services.exchange_factory import get_exchange_service
+from ..services.exchange_base import BaseExchangeService
 
 router = APIRouter(prefix="/api/positions", tags=["positions"])
+
+
+def _total_contracts_on_leg(rows: list | None, symbol: str, side: str) -> float:
+    want = BaseExchangeService._norm_sym(symbol)
+    sl = (side or "").lower()
+    total = 0.0
+    for pos in rows or []:
+        if BaseExchangeService._norm_sym(pos.get("symbol") or "") != want:
+            continue
+        if (pos.get("side") or "").lower() != sl:
+            continue
+        total += float(pos.get("contracts", 0) or 0)
+    return total
 
 
 @router.get("", response_model=list[PositionResponse])
@@ -58,12 +71,25 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
             pass
 
     result = await exchange.close_position(position.symbol, position.side)
-    if not result or not result.get("id"):
-        raise HTTPException(status_code=500, detail="Exchange did not confirm the close order")
 
-    exit_price = float(result.get("average", 0) or result.get("price", 0) or 0)
+    exit_price = 0.0
+    close_reason = "manual"
+
+    if result and result.get("id"):
+        exit_price = float(result.get("average", 0) or result.get("price", 0) or 0)
+    else:
+        # close_position 在交易所已无持仓时返回空 —— 仍可清理本地未完成记录（常见：手工在交易所平仓后）
+        fetched = await exchange.fetch_positions([position.symbol])
+        if _total_contracts_on_leg(fetched, position.symbol, position.side) > 1e-12:
+            raise HTTPException(
+                status_code=500,
+                detail="交易所仍能查到该方向的持仓数量，无法在本地清除；请稍后重试或仍在交易所平仓",
+            )
+        exit_price = float(position.mark_price or position.entry_price or 0)
+        close_reason = "exchange_already_flat"
+
     if exit_price <= 0:
-        exit_price = position.mark_price or position.entry_price
+        exit_price = float(position.mark_price or position.entry_price or 0)
 
     from ..models.trade import Trade
     trade = Trade(
@@ -80,7 +106,7 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
         exit_time=now_beijing(),
         layer=position.layer,
         grid_level=getattr(position, 'grid_level', 0),
-        close_reason="manual",
+        close_reason=close_reason,
     )
     db.add(trade)
     position.closed_at = now_beijing()

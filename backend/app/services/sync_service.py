@@ -108,3 +108,6 @@ class PositionSyncService:
                 await session.commit()
         except Exception as e:
             logger.error("Position sync for account %d failed: %s", account_id, e)
+
+
+position_sync_service = PositionSyncService()
