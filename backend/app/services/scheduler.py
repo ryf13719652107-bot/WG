@@ -139,6 +139,10 @@ class StrategyScheduler:
         await session.refresh(strategy)
         logger.info("Strategy %d (%s %s) started", strategy_id, strategy.symbol, strategy.direction)
         strategy_log_service.success(strategy_id, f"策略启动 — {strategy.symbol} {strategy.direction}")
+
+        # 立即执行一次，不等待30秒调度周期
+        asyncio.create_task(self._execute_strategy(strategy_id))
+
         return True
 
     async def remove_strategy(self, strategy_id: int):
