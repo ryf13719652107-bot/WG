@@ -208,34 +208,38 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a STOP_MARKET order for Binance USDM Futures."""
+        """Create a STOP_MARKET order for Binance USDM Futures using private API."""
         formatted = self._format_symbol(symbol)
+        base = formatted.replace("/", "").replace(":USDT", "")
+
         combos = []
         if self.hedge_mode:
-            combos.append({"positionSide": position_side, "stopPrice": stop_price})
-            combos.append({"stopPrice": stop_price})
+            combos.append({"positionSide": position_side})
+            combos.append({})
         else:
-            combos.append({"stopPrice": stop_price})
+            combos.append({})
 
         last_exc = None
-        for idx, params in enumerate(combos):
+        for idx, extra_params in enumerate(combos):
             try:
-                extra = {
+                params = {
+                    "symbol": base,
+                    "side": side.upper(),
                     "type": "STOP_MARKET",
-                    "side": side,
-                    "amount": amount,
-                    "params": params,
+                    "quantity": str(amount),
+                    "stopPrice": str(stop_price),
+                    **extra_params,
                 }
                 tag = f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
                 return await retry_with_backoff(
                     tag,
-                    lambda s=formatted, e=extra: self.exchange.create_order(symbol=s, **e),
+                    lambda p=params: self.exchange.fapiPrivatePostOrder(p),
                 )
             except Exception as e:
                 last_exc = e
                 err_str = str(e)
-                if "-1106" in err_str or "-4061" in err_str:
-                    logger.debug("Stop loss order combo%d (-1106/-4061), trying next", idx)
+                if "-1106" in err_str or "-4061" in err_str or "-4120" in err_str:
+                    logger.debug("Stop loss order combo%d failed: %s, trying next", idx, e)
                     continue
                 raise
         raise last_exc
