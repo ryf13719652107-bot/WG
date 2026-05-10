@@ -91,28 +91,31 @@ class OkxService(BaseExchangeService):
     async def fetch_positions(self, symbols: Optional[list[str]] = None) -> list[dict]:
         """与 BinanceService 相同策略：指定 symbols 失败时 load_markets 后重试，再退回全量并按 norm 过滤。"""
         if not symbols:
-            return await retry_with_backoff(
+            raw_all = await retry_with_backoff(
                 "okx.fetch_positions(all)",
                 lambda: self.exchange.fetch_positions(None),
             )
+            return list(raw_all or [])
         formatted = [self._format_symbol(s) for s in symbols]
         try:
-            return await retry_with_backoff(
+            raw_pos = await retry_with_backoff(
                 "okx.fetch_positions",
                 lambda: self.exchange.fetch_positions(formatted),
             )
+            return list(raw_pos or [])
         except Exception as e:
             msg = str(e).lower()
             if "does not have market symbol" in msg or "marketsymbol" in msg or "invalid symbol" in msg:
                 try:
                     await self.exchange.load_markets(True)
-                    return await self.exchange.fetch_positions(formatted)
+                    raw2 = await self.exchange.fetch_positions(formatted)
+                    return list(raw2 or [])
                 except Exception as e2:
                     logger.debug("okx.fetch_positions(%s) after load_markets: %s", symbols, e2)
                 logger.warning("okx.fetch_positions symbol missing, fallback all: %s", symbols)
                 raw = await self.exchange.fetch_positions(None)
                 want = {self._norm_sym(s) for s in symbols}
-                return [p for p in raw if self._norm_sym(p.get("symbol") or "") in want]
+                return [p for p in (raw or []) if self._norm_sym(p.get("symbol") or "") in want]
             raise
 
     async def fetch_leverage(self, symbol: str) -> float:
@@ -220,11 +223,12 @@ class OkxService(BaseExchangeService):
             params = dict(extra_params or {})
             params.update(combo)
             try:
+                # 空 dict 在 Python 中为假值，不能写成 params or None，否则 ccxt 收到 None 会报 'NoneType' is not iterable
                 extra: dict = {
                     "type": order_type,
                     "side": side,
                     "amount": amount,
-                    "params": params if params else None,
+                    "params": params or {},
                 }
                 if price is not None:
                     extra["price"] = price

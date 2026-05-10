@@ -309,7 +309,7 @@ class BinanceService(BaseExchangeService):
                 extra = {"type": order_type, "side": side, "amount": amount}
                 if price is not None:
                     extra["price"] = price
-                extra["params"] = params if params else None
+                extra["params"] = params or {}
                 tag = f"binance.create_{label}_order(combo{idx})" if idx > 0 else f"binance.create_{label}_order"
                 return await retry_with_backoff(
                     tag,
