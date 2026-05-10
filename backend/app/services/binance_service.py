@@ -239,7 +239,7 @@ class BinanceService(BaseExchangeService):
                 order = await retry_with_backoff(
                     f"binance.create_stop_loss_order(algo_combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
                     lambda p=params: self.exchange.request(
-                        'fapi/v1/algoOrder', 'fapiPrivate', 'POST', p
+                        'algoOrder', 'fapiPrivate', 'POST', p
                     ),
                 )
                 return order
@@ -318,7 +318,7 @@ class BinanceService(BaseExchangeService):
         return await retry_with_backoff(
             "binance.cancel_algo_order",
             lambda: self.exchange.request(
-                'fapi/v1/algoOrder', 'fapiPrivate', 'DELETE', params
+                'algoOrder', 'fapiPrivate', 'DELETE', params
             ),
         )
 
