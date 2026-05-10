@@ -263,18 +263,10 @@ class BinanceService(BaseExchangeService):
             return {}
 
         close_side = "sell" if side == "long" else "buy"
-        try:
-            return await self.create_market_order(
-                symbol, close_side, total_contracts,
-                reduce_only=True, position_side=position_side,
-            )
-        except Exception as e:
-            if "-1106" in str(e):
-                return await self.create_market_order(
-                    symbol, close_side, total_contracts,
-                    reduce_only=False, position_side=position_side,
-                )
-            raise
+        return await self.create_market_order(
+            symbol, close_side, total_contracts,
+            reduce_only=True, position_side=position_side,
+        )
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """Set leverage for a symbol on Binance USDM Futures."""
