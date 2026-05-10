@@ -90,12 +90,32 @@ class GridStrategyEngine:
         total_cost = 0.0
         for p in positions:
             qty = float(p.quantity)
+            if qty <= 0:
+                continue
             price = float(p.entry_price)
             total_qty += qty
             total_cost += qty * price
         if total_qty <= 0:
             return 0.0
         return total_cost / total_qty
+
+    @staticmethod
+    def stop_loss_price_for_fixed_usdt_loss(
+        weighted_avg_entry: float, contract_qty: float, loss_u: float, side: str,
+    ) -> float:
+        """Linear USDT-M: 近似在触发价全平 contract_qty 张时，浮动亏损约 loss_u（U）。
+
+        多: P = avg - loss_u/Q ；空: P = avg + loss_u/Q 。与多级持仓加权均价一致。
+        """
+        if weighted_avg_entry <= 0 or contract_qty <= 0 or loss_u <= 0:
+            return 0.0
+        step = loss_u / contract_qty
+        s = side.lower()
+        if s == "long":
+            return round(weighted_avg_entry - step, 8)
+        if s == "short":
+            return round(weighted_avg_entry + step, 8)
+        return 0.0
 
     def calculate_cumulative_loss(self, positions: list, current_price: float) -> float:
         """Calculate cumulative unrealized U PnL across all layers for this strategy.
@@ -105,6 +125,8 @@ class GridStrategyEngine:
         total_u = 0.0
         for p in positions:
             qty = float(p.quantity)
+            if qty <= 0:
+                continue
             entry = float(p.entry_price)
             side = p.side
 

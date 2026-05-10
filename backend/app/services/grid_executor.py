@@ -5,6 +5,7 @@ from typing import Optional
 from ..config import now_beijing
 from ..models.position import Position
 from ..models.trade import Trade
+from .exchange_base import BaseExchangeService
 from .grid_engine import GridStrategyEngine, GridLevel
 from .order_tracker import order_tracker, OrderState
 from .stop_loss_manager import StopLossManager, StopLossLevel
@@ -52,21 +53,116 @@ class GridExecutor:
             return round(qty, 6)
         return round(qty, 8)
 
-    @staticmethod
-    def _calculate_stop_loss_price(avg_entry: float, total_qty: float, loss_u: float, side: str) -> float:
-        """Calculate stop loss price based on max loss in USDT.
+    async def _avg_qty_for_stop_loss_basis(
+        self,
+        exchange,
+        symbol: str,
+        direction: str,
+        db_positions: list,
+    ) -> tuple[float, float, str]:
+        """止损用加权均价与张数：优先使用交易所实时持仓（与浮亏口径一致），否则退回 DB."""
+        side = direction.lower()
+        qty_db = sum(float(p.quantity) for p in db_positions if float(p.quantity) > 0)
+        avg_db = self.engine.calculate_avg_entry(db_positions) if qty_db > 0 else 0.0
 
-        For long: sl_price = avg_entry - (loss_u / total_qty)
-        For short: sl_price = avg_entry + (loss_u / total_qty)
-        """
-        if total_qty <= 0 or loss_u <= 0:
-            return 0.0
-        price_offset = loss_u / total_qty
-        if side == "long":
-            sl_price = avg_entry - price_offset
-        else:
-            sl_price = avg_entry + price_offset
-        return round(sl_price, 8)
+        want = BaseExchangeService._norm_sym(symbol)
+        raw: list = []
+        try:
+            raw = await exchange.fetch_positions([symbol])
+        except Exception as e:
+            logger.warning("fetch_positions for SL basis (%s): %s", symbol, e)
+
+        ex_qty = 0.0
+        ex_cost = 0.0
+        for rp in raw or []:
+            rsym = BaseExchangeService._norm_sym(str(rp.get("symbol") or ""))
+            if rsym != want:
+                continue
+            p_side = (rp.get("side") or "").lower()
+            if p_side != side:
+                continue
+            c = abs(float(rp.get("contracts") or 0))
+            if c <= 0:
+                continue
+            ep = float(rp.get("entryPrice") or rp.get("entry_price") or 0)
+            if ep <= 0:
+                continue
+            ex_qty += c
+            ex_cost += ep * c
+
+        if ex_qty > 1e-12:
+            avg_ex = ex_cost / ex_qty
+            if qty_db > 1e-12 and (
+                abs(ex_qty - qty_db) / qty_db > 0.015
+                or abs(avg_ex - avg_db) / max(avg_db, 1e-12) > 0.015
+            ):
+                logger.info(
+                    "SL basis prefers exchange avg=%.6f qty=%.8f over DB avg=%.6f qty=%.8f",
+                    avg_ex, ex_qty, avg_db, qty_db,
+                )
+            return avg_ex, ex_qty, "exchange"
+
+        return avg_db, qty_db, "db"
+
+    async def _compute_and_place_stop_loss(
+        self,
+        *,
+        strategy,
+        symbol: str,
+        exchange,
+        db_positions: list,
+        position_side: str,
+        log_label: str,
+    ) -> None:
+        """按当前持仓加权均价与张数推算触发价（张数会先按交易所步长取整），使名义浮亏≈阈值U."""
+        loss_u = self.engine.loss_threshold
+        if loss_u <= 0:
+            return
+
+        avg_raw, qty_raw, basis = await self._avg_qty_for_stop_loss_basis(
+            exchange, symbol, strategy.direction, db_positions
+        )
+        qty_sl = await exchange.normalize_order_amount(symbol, qty_raw)
+        sl_price = self.engine.stop_loss_price_for_fixed_usdt_loss(
+            avg_raw, qty_sl, loss_u, strategy.direction,
+        )
+        sl_side = "sell" if strategy.direction == "long" else "buy"
+
+        if sl_price <= 0 or qty_sl <= 0 or not self._check_order_qty(qty_sl, symbol):
+            strategy_log_service.warning(
+                strategy.id,
+                f"{log_label}跳过: 无效价或量 basis={basis} avg={avg_raw:.6f} raw_qty={qty_raw:.8f} step_qty={qty_sl:.8f}",
+            )
+            return
+
+        try:
+            sl_order = await exchange.create_stop_loss_order(
+                symbol, sl_side, qty_sl, sl_price,
+                reduce_only=True, position_side=position_side,
+            )
+            sl_order_id = str(sl_order.get("algoId") or sl_order.get("id", ""))
+            order_tracker.add(
+                sl_order_id, symbol, sl_side, "stop",
+                qty_sl, sl_price, strategy.id, "stop_loss",
+            )
+            strategy_log_service.success(
+                strategy.id,
+                f"{log_label}: basis={basis} avg={avg_raw:.6f} step_qty={qty_sl:.8f} "
+                f"止损价={sl_price:.6f} (阈值约{loss_u:.2f}U)",
+            )
+            logger.info(
+                "%s SL placed sym=%s basis=%s avg=%s qty_sl=%s sl_price=%s loss_u=%s",
+                log_label,
+                symbol,
+                basis,
+                avg_raw,
+                qty_sl,
+                sl_price,
+                loss_u,
+            )
+        except Exception as e:
+            logger.error("%s SL failed strategy=%s: %s", log_label, strategy.id, e)
+            strategy_log_service.warning(strategy.id, f"{log_label}失败: {e} (将使用浮亏监控止损)")
 
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
@@ -232,27 +328,14 @@ class GridExecutor:
         await session.commit()
 
         if self.engine.loss_threshold > 0:
-            sl_price = self._calculate_stop_loss_price(entry_price, filled_qty, self.engine.loss_threshold, strategy.direction)
-            sl_side = "sell" if strategy.direction == "long" else "buy"
-            if sl_price > 0 and self._check_order_qty(filled_qty, symbol):
-                try:
-                    sl_order = await exchange.create_stop_loss_order(
-                        symbol, sl_side, filled_qty, sl_price,
-                        reduce_only=True, position_side=position_side,
-                    )
-                    sl_order_id = str(sl_order.get("algoId") or sl_order.get("id", ""))
-                    order_tracker.add(
-                        sl_order_id, symbol, sl_side, "stop",
-                        filled_qty, sl_price, strategy.id, "stop_loss",
-                    )
-                    strategy_log_service.success(
-                        strategy.id,
-                        f"挂单止损: 数量={filled_qty:.4f} 止损价={sl_price:.4f} (最大亏损{self.engine.loss_threshold}U)",
-                    )
-                    logger.info("Stop loss order placed: %s qty=%.4f sl_price=%.4f", symbol, filled_qty, sl_price)
-                except Exception as e:
-                    logger.error("Failed to place SL order for %s %s: %s", strategy.id, symbol, e)
-                    strategy_log_service.warning(strategy.id, f"挂单止损失败: {e} (将使用浮亏监控止损)")
+            await self._compute_and_place_stop_loss(
+                strategy=strategy,
+                symbol=symbol,
+                exchange=exchange,
+                db_positions=[pos],
+                position_side=position_side,
+                log_label="挂单止损",
+            )
 
         grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
         placed = 0
@@ -472,27 +555,14 @@ class GridExecutor:
 
             if self.engine.loss_threshold > 0:
                 await self._cancel_sl_orders(session, strategy, symbol, exchange)
-                sl_price = self._calculate_stop_loss_price(avg_entry, total_qty, self.engine.loss_threshold, side)
-                sl_side = "sell" if side == "long" else "buy"
-                if sl_price > 0 and self._check_order_qty(total_qty, symbol):
-                    try:
-                        sl_order = await exchange.create_stop_loss_order(
-                            symbol, sl_side, total_qty, sl_price,
-                            reduce_only=True, position_side=position_side,
-                        )
-                        sl_order_id = str(sl_order.get("id", ""))
-                        order_tracker.add(
-                            sl_order_id, symbol, sl_side, "stop",
-                            total_qty, sl_price, strategy.id, "stop_loss",
-                        )
-                        strategy_log_service.success(
-                            strategy.id,
-                            f"更新止损: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止损价={sl_price:.4f}",
-                        )
-                        logger.info("Stop loss updated after grid add: %s qty=%.4f sl_price=%.4f", symbol, total_qty, sl_price)
-                    except Exception as e:
-                        logger.error("Failed to update SL after grid add: %s", e)
-                        strategy_log_service.warning(strategy.id, f"更新止损失败: {e}")
+                await self._compute_and_place_stop_loss(
+                    strategy=strategy,
+                    symbol=symbol,
+                    exchange=exchange,
+                    db_positions=positions,
+                    position_side=position_side,
+                    log_label="更新止损",
+                )
 
             await session.commit()
             # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层

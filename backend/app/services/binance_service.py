@@ -186,6 +186,18 @@ class BinanceService(BaseExchangeService):
             return list(raw.values())
         return raw or []
 
+    async def normalize_order_amount(self, symbol: str, amount: float) -> float:
+        if amount <= 0:
+            return 0.0
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            step = float(self.exchange.amount_to_precision(formatted, amount))
+            return max(0.0, step)
+        except Exception as e:
+            logger.warning("normalize_order_amount(%s): %s", symbol, e)
+            return float(amount)
+
     # ---- Orders (Private) ----
 
     async def create_market_order(

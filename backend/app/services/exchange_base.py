@@ -140,6 +140,16 @@ class BaseExchangeService(ABC):
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """Set leverage for a symbol on the exchange."""
 
+    async def normalize_order_amount(self, symbol: str, amount: float) -> float:
+        """Contracts amount stepped to exchange lot size (stop-loss math uses order qty).
+
+        Override on concrete exchanges via ccxt ``amount_to_precision`` (after ``load_markets``).
+        """
+        try:
+            return float(amount)
+        except (TypeError, ValueError):
+            return 0.0
+
     # ---- WebSocket (Public) ----
 
     @abstractmethod

@@ -84,6 +84,36 @@ def test_calculate_avg_entry():
     assert avg == pytest.approx(expected, abs=0.01)
 
 
+def test_stop_loss_price_matches_cumulative_loss_threshold():
+    """在触发价时，线性 USDT 永续多/空：sum((P-e_i)q_i) ≈ -loss_u（用加权均价等价）。"""
+    s = MockStrategy(cumulative_loss_threshold_u=5.0)
+    eng = GridStrategyEngine(s)
+    loss_u = 5.0
+    qty = 10.0
+    avg = 100.0
+
+    sl_long = eng.stop_loss_price_for_fixed_usdt_loss(avg, qty, loss_u, "long")
+    assert sl_long == pytest.approx(99.5, abs=1e-6)
+    assert (sl_long - avg) * qty == pytest.approx(-loss_u, abs=1e-4)
+
+    sl_short = eng.stop_loss_price_for_fixed_usdt_loss(avg, qty, loss_u, "short")
+    assert sl_short == pytest.approx(100.5, abs=1e-6)
+    assert (avg - sl_short) * qty == pytest.approx(-loss_u, abs=1e-4)
+
+    class Pos:
+        def __init__(self, qty, price, side):
+            self.quantity = qty
+            self.entry_price = price
+            self.side = side
+
+    legs = [Pos(4.0, 100.0, "long"), Pos(6.0, 101.0, "long")]
+    wavg = eng.calculate_avg_entry(legs)
+    assert wavg == pytest.approx((400 + 606) / 10.0, abs=1e-6)
+    sl2 = eng.stop_loss_price_for_fixed_usdt_loss(wavg, 10.0, loss_u, "long")
+    pnl_at_sl = eng.calculate_cumulative_loss(legs, sl2)
+    assert pnl_at_sl == pytest.approx(-loss_u, abs=0.05)
+
+
 def test_calculate_cumulative_loss_long():
     s = MockStrategy()
     eng = GridStrategyEngine(s)
