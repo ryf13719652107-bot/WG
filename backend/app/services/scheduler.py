@@ -21,7 +21,7 @@ from .health_monitor import health_monitor
 
 logger = logging.getLogger(__name__)
 
-_STRATEGY_TICK_SECONDS = 5
+_STRATEGY_TICK_SECONDS = 30  # 兜底轮询(WS实时监听已覆盖订单成交)
 _STRATEGY_SEMAPHORE = asyncio.Semaphore(100)
 
 
