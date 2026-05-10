@@ -187,6 +187,12 @@ class BaseExchangeService(ABC):
         except (TypeError, ValueError):
             return 0.0
 
+    async def quote_usdt_to_order_amount(self, symbol: str, quote_usdt: float, ref_price: float) -> float:
+        """将「约多少 USDT 名义」换算为下单 amount。默认按现货式 qty=U/价；永续合约所（如 OKX）应覆写为张数。"""
+        if quote_usdt <= 0 or ref_price <= 0:
+            return 0.0
+        return float(quote_usdt) / float(ref_price)
+
     async def fetch_open_algo_orders(self, symbol: str) -> list:
         """Open conditional (algo) orders for this symbol. Default empty; Binance USD-M overrides."""
         return []

@@ -329,7 +329,7 @@ class GridExecutor:
                 total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
                 usdt_amount = total_usdt * (strategy.base_qty_value / 100.0)
                 if current_price > 0:
-                    qty = usdt_amount / current_price
+                    qty = await exchange.quote_usdt_to_order_amount(symbol, usdt_amount, float(current_price))
             except Exception as e:
                 logger.warning("Failed to calculate margin-based qty: %s", e)
                 strategy_log_service.error(strategy.id, f"开仓失败: 获取余额异常 - {e}")
@@ -337,7 +337,9 @@ class GridExecutor:
                 return
         else:
             if current_price > 0:
-                qty = strategy.base_qty_value / current_price
+                qty = await exchange.quote_usdt_to_order_amount(
+                    symbol, float(strategy.base_qty_value), float(current_price),
+                )
             else:
                 logger.error("Cannot calculate qty: current_price is 0")
                 strategy_log_service.error(strategy.id, "开仓失败: 无法获取当前价格")
@@ -351,6 +353,7 @@ class GridExecutor:
             return
 
         qty = self._round_qty(qty)
+        qty = await exchange.normalize_order_amount(symbol, qty)
 
         try:
             order = await exchange.create_market_order(
@@ -510,13 +513,13 @@ class GridExecutor:
                 balance = await exchange.fetch_balance()
                 total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
                 usdt_amount = total_usdt * (raw_size / 100.0)
-                qty = usdt_amount / trigger_price
+                qty = await exchange.quote_usdt_to_order_amount(symbol, usdt_amount, float(trigger_price))
             except Exception as e:
                 logger.warning("Failed to calculate margin-based grid add qty: %s", e)
                 strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: 余额查询异常")
                 return None
         else:
-            qty = raw_size / trigger_price
+            qty = await exchange.quote_usdt_to_order_amount(symbol, float(raw_size), float(trigger_price))
 
         if qty <= 0:
             logger.error("Grid add qty is 0 for strategy %d level %d", strategy.id, grid_level.level)
@@ -524,6 +527,7 @@ class GridExecutor:
             return None
 
         qty = self._round_qty(qty)
+        qty = await exchange.normalize_order_amount(symbol, qty)
 
         try:
             order = await exchange.create_limit_order(

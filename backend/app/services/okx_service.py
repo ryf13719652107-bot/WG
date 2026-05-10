@@ -165,11 +165,48 @@ class OkxService(BaseExchangeService):
         formatted = self._format_symbol(symbol)
         try:
             await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
             step = float(self.exchange.amount_to_precision(formatted, amount))
+            lim = (m.get("limits") or {}).get("amount") or {}
+            mn = lim.get("min")
+            if mn is not None:
+                try:
+                    mnf = float(mn)
+                    if mnf > 0:
+                        step = float(self.exchange.amount_to_precision(formatted, max(step, mnf)))
+                except (TypeError, ValueError):
+                    pass
             return max(0.0, step)
         except Exception as e:
             logger.warning("OKX normalize_order_amount(%s): %s", symbol, e)
             return float(amount)
+
+    async def quote_usdt_to_order_amount(self, symbol: str, quote_usdt: float, ref_price: float) -> float:
+        """OKX 永续：amount 为合约张数 sz；名义 U ≈ 张数 × 价 × 每张基础数量(contractSize/ctVal)。"""
+        if quote_usdt <= 0 or ref_price <= 0:
+            return 0.0
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
+            if not m.get("contract"):
+                return float(quote_usdt) / float(ref_price)
+            cs = float(m.get("contractSize") or 0)
+            info = m.get("info") or {}
+            if isinstance(info, dict) and cs <= 0:
+                try:
+                    cs = float(info.get("ctVal") or 0)
+                except (TypeError, ValueError):
+                    cs = 0.0
+            if cs <= 0:
+                return float(quote_usdt) / float(ref_price)
+            per_contract = float(ref_price) * float(cs)
+            if per_contract <= 0:
+                return 0.0
+            return float(quote_usdt) / per_contract
+        except Exception as e:
+            logger.warning("OKX quote_usdt_to_order_amount(%s): %s", symbol, e)
+            return float(quote_usdt) / float(ref_price)
 
     # ---- Orders ----
 
@@ -313,7 +350,7 @@ class OkxService(BaseExchangeService):
                     await retry_with_backoff(
                         "okx.cancel_order(sweep)",
                         lambda i=oid, cp=dict(cparams): self.exchange.cancel_order(
-                            i, formatted, params=cp or None,
+                            i, formatted, params=cp or {},
                         ),
                     )
                     n += 1
