@@ -5,9 +5,11 @@ const BASE = '/api';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const path = url.startsWith('http') ? new URL(url).pathname : `${BASE}${url}`;
+  const authPath = path.includes('/auth/');
   const res = await fetch(`${BASE}${url}`, {
     credentials: 'include',
     ...options,
+    ...(authPath ? { cache: 'no-store' as RequestInit['cache'] } : {}),
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   });
   if (res.status === 401) {

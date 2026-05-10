@@ -1,4 +1,4 @@
-import { Component, ReactNode, useCallback, useEffect, useState } from 'react';
+import { Component, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 import DashboardPage from './components/dashboard/DashboardPage';
@@ -43,6 +43,8 @@ type Gate = 'loading' | 'login' | 'app';
 export default function App() {
   const [gate, setGate] = useState<Gate>('loading');
   const [authRequired, setAuthRequired] = useState(false);
+  const authRequiredRef = useRef(false);
+  authRequiredRef.current = authRequired;
 
   const bootstrap = useCallback(async () => {
     setGate('loading');
@@ -70,6 +72,35 @@ export default function App() {
     return () => window.removeEventListener('wg-auth-required', fn);
   }, []);
 
+  /** 门禁开启时：切回前台后复检，禁止未登录继续操作 SPA */
+  useEffect(() => {
+    if (gate !== 'app') return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const verify = async () => {
+      if (!authRequiredRef.current) return;
+      try {
+        const s = await api.authStatus();
+        if (s.auth_required && !s.authenticated) setGate('login');
+      } catch {
+        /* 网络抖动不踢下线，避免误判 */
+      }
+    };
+    const onFocus = () => {
+      clearTimeout(t);
+      t = setTimeout(verify, 200);
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [gate]);
+
   const handleLogout = async () => {
     try {
       await api.logout();
@@ -83,7 +114,7 @@ export default function App() {
   if (gate === 'loading') {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-500 text-sm">
-        加载中…
+        校验访问权限…
       </div>
     );
   }
