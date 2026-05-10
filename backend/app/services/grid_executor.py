@@ -303,13 +303,18 @@ class GridExecutor:
             f"止盈触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
         )
 
-        # TP filled → close all positions
+        # TP filled → close all positions (skip market-close, TP already closed on exchange)
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, "take_profit")
+
+        # Refresh strategy (status may be stale after commit)
+        await session.refresh(strategy)
 
         # Reopen initial if configured and strategy still running; otherwise stop
         if strategy.reopen_after_close and strategy.status == "running":
+            strategy_log_service.success(strategy.id, f"止盈成功,自动重开: {symbol}")
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
+            strategy_log_service.success(strategy.id, f"止盈成功,策略停止: {symbol}")
             strategy.status = "stopped"
             await session.commit()
 
@@ -453,6 +458,8 @@ class GridExecutor:
 
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, close_reason)
 
+        await session.refresh(strategy)
+
         if strategy.reopen_after_close and strategy.status == "running":
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
@@ -472,17 +479,21 @@ class GridExecutor:
                 except Exception:
                     pass
 
-        # Market close all
-        close_success = False
-        try:
-            result = await exchange.close_position(symbol, strategy.direction)
-            if result:
-                close_success = True
-        except Exception as e:
-            logger.error("Failed to close position for strategy=%d %s: %s", strategy.id, symbol, e)
-            strategy_log_service.error(strategy.id, f"交易所平仓失败: {e}")
+        # Market close all — skip if TP already closed the position on exchange
+        close_success = True  # assume OK for TP/SL that already closed
+        if reason in ("take_profit",):
+            logger.info("Skipping close_position for strategy=%d: position already closed by TP", strategy.id)
+        else:
+            close_success = False
+            try:
+                result = await exchange.close_position(symbol, strategy.direction)
+                if result:
+                    close_success = True
+            except Exception as e:
+                logger.error("Failed to close position for strategy=%d %s: %s", strategy.id, symbol, e)
+                strategy_log_service.error(strategy.id, f"交易所平仓失败: {e}")
 
-        if not close_success:
+        if not close_success and reason not in ("take_profit",):
             logger.warning("Exchange close failed for strategy=%d %s — still recording DB close", strategy.id, symbol)
             strategy_log_service.warning(strategy.id, "交易所平仓失败，本地记录已关闭，请手动检查交易所持仓")
 
