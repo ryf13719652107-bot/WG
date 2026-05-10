@@ -32,7 +32,8 @@ class StrategyScheduler:
         self._exchange_services: dict[int, BaseExchangeService] = {}
         self._engines: dict[int, GridStrategyEngine] = {}
         self._executors: dict[int, GridExecutor] = {}
-        self._prices_task: Optional[asyncio.Task] = None
+        self._order_watch_tasks: dict[int, asyncio.Task] = {}
+        self._running = False
 
     @property
     def scheduler(self) -> AsyncIOScheduler:
@@ -83,6 +84,60 @@ class StrategyScheduler:
             except Exception as e:
                 logger.error("Failed to start price stream for %s: %s", ex_type, e)
 
+        # 启动订单成交实时监听
+        await self._start_order_watchers()
+
+    async def _start_order_watchers(self):
+        """启动WS订单监听,加仓/止盈成交时立即触发策略执行."""
+        self._running = True
+        async with async_session() as session:
+            result = await session.execute(
+                select(Strategy).where(Strategy.status == "running")
+            )
+            for s in result.scalars().all():
+                if s.id in self._order_watch_tasks:
+                    continue
+                exchange = self._exchange_services.get(s.id)
+                if not exchange:
+                    continue
+                self._order_watch_tasks[s.id] = asyncio.create_task(
+                    self._watch_orders_loop(s.id, exchange, s.symbol)
+                )
+                logger.info("Order watcher started for strategy %d (%s)", s.id, s.symbol)
+
+    async def _watch_orders_loop(self, strategy_id: int, exchange, symbol: str):
+        """监听订单成交(WebSocket),成交后立即触发策略tick."""
+        from .order_tracker import order_tracker, OrderState
+        while self._running and strategy_id in self._order_watch_tasks:
+            try:
+                if not hasattr(exchange, 'ws_exchange') or not exchange.ws_exchange:
+                    await asyncio.sleep(2)
+                    continue
+                orders = await exchange.ws_exchange.watch_orders(symbol)
+                for raw in (orders if isinstance(orders, list) else [orders]):
+                    oid = str(raw.get("id", "") or "")
+                    status = (raw.get("status") or "").lower()
+                    if status not in ("closed", "filled", "canceled", "cancelled"):
+                        continue
+                    co = order_tracker.get(oid)
+                    if not co or co.strategy_id != strategy_id:
+                        continue
+                    if co.status == OrderState.FILLED:
+                        continue
+                    co.status = OrderState.FILLED if status in ("closed", "filled") else OrderState.CANCELED
+                    co.filled = float(raw.get("filled", 0) or 0)
+                    avg = float(raw.get("average", 0) or 0)
+                    if avg > 0:
+                        co.price = avg
+                    logger.info("Order %s %s via WS for strategy %d", oid, co.status.value, strategy_id)
+                    # 立即触发策略执行
+                    asyncio.create_task(self._execute_strategy(strategy_id))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("Order watcher %d error: %s", strategy_id, e)
+                await asyncio.sleep(5)
+
     def _register_strategy_job(self, strategy_id: int):
         job_id = f"strategy_{strategy_id}"
         if self._aps.get_job(job_id):
@@ -102,6 +157,11 @@ class StrategyScheduler:
             self._aps.start()
 
     def stop(self):
+        self._running = False
+        for task in list(self._order_watch_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._order_watch_tasks.clear()
         if self._aps.running:
             self._aps.shutdown(wait=False)
 
@@ -140,7 +200,16 @@ class StrategyScheduler:
         logger.info("Strategy %d (%s %s) started", strategy_id, strategy.symbol, strategy.direction)
         strategy_log_service.success(strategy_id, f"策略启动 — {strategy.symbol} {strategy.direction}")
 
-        # 立即执行一次，不等待30秒调度周期
+        # 启动订单成交实时监听
+        exchange = self._exchange_services.get(strategy_id)
+        if exchange and strategy_id not in self._order_watch_tasks:
+            self._running = True
+            self._order_watch_tasks[strategy_id] = asyncio.create_task(
+                self._watch_orders_loop(strategy_id, exchange, strategy.symbol)
+            )
+            logger.info("Order watcher started for strategy %d", strategy_id)
+
+        # 立即执行一次
         asyncio.create_task(self._execute_strategy(strategy_id))
 
         return True
@@ -151,6 +220,9 @@ class StrategyScheduler:
         self._engines.pop(strategy_id, None)
         self._executors.pop(strategy_id, None)
         self._exchange_services.pop(strategy_id, None)
+        task = self._order_watch_tasks.pop(strategy_id, None)
+        if task and not task.done():
+            task.cancel()
         if self._aps.get_job(job_id):
             self._aps.remove_job(job_id)
         async with async_session() as session:
