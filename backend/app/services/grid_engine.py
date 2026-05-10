@@ -126,7 +126,7 @@ class GridStrategyEngine:
     def get_next_grid_add(self, last_entry_price: float, current_layer: int, side: str) -> Optional[GridLevel]:
         """Get the next grid add level parameters (for placing limit order after an add fills)."""
         next_level = current_layer + 1
-        if next_level >= self.max_layers:
+        if next_level > self.max_layers:
             return None
 
         levels = self.calculate_grid_levels(last_entry_price, side)

@@ -20,7 +20,7 @@ def test_calculate_grid_levels_long():
     eng = GridStrategyEngine(s)
     levels = eng.calculate_grid_levels(100.0, "long")
 
-    assert len(levels) == 3
+    assert len(levels) == 4
     assert levels[0].level == 1
     assert levels[0].trigger_price == pytest.approx(99.0, abs=0.01)
     assert levels[0].quantity == pytest.approx(1.5, abs=0.01)
@@ -36,15 +36,21 @@ def test_calculate_grid_levels_long():
     assert levels[2].quantity == pytest.approx(3.375, abs=0.01)
     assert levels[2].drop_pct == pytest.approx(4.75, abs=0.01)
 
+    assert levels[3].level == 4
+    assert levels[3].trigger_price == pytest.approx(91.875, abs=0.01)
+    assert levels[3].quantity == pytest.approx(5.0625, abs=0.01)
+    assert levels[3].drop_pct == pytest.approx(8.125, abs=0.01)
+
 
 def test_calculate_grid_levels_short():
     s = MockStrategy(grid_drop_base_pct=1.0, grid_interval_multiplier=1.5, max_layers=3)
     eng = GridStrategyEngine(s)
     levels = eng.calculate_grid_levels(100.0, "short")
 
-    assert len(levels) == 2
+    assert len(levels) == 3
     assert levels[0].trigger_price == pytest.approx(101.0, abs=0.01)
     assert levels[1].trigger_price == pytest.approx(102.5, abs=0.01)
+    assert levels[2].trigger_price == pytest.approx(104.75, abs=0.01)
 
 
 def test_calculate_position_size():
@@ -114,5 +120,9 @@ def test_get_next_grid_add():
     assert gl is not None
     assert gl.level == 1
 
-    gl2 = eng.get_next_grid_add(100.0, 4, "long")
+    gl_mid = eng.get_next_grid_add(100.0, 4, "long")
+    assert gl_mid is not None
+    assert gl_mid.level == 5
+
+    gl2 = eng.get_next_grid_add(100.0, 5, "long")
     assert gl2 is None

@@ -5,7 +5,7 @@ aiosqlite==0.20.*
 alembic==1.14.*
 cryptography==44.*
 pydantic-settings==2.7.*
-ccxt==4.4.*
+ccxt>=4.5.48,<4.6
 apscheduler==3.10.*
 pytest==8.*
 pytest-asyncio==0.24.*

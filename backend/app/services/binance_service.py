@@ -9,6 +9,9 @@ from .exchange_base import BaseExchangeService, retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
+# Relative path segment only; ccxt joins this to urls['api']['fapiPrivate'] which already ends with /fapi/v1.
+_FAPI_ALGO_ORDER_PATH = "algoOrder"
+
 
 class BinanceService(BaseExchangeService):
     """Wrapper around ccxt binanceusdm (USD-M Futures)."""
@@ -208,46 +211,45 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a STOP_MARKET order using Binance Algo Order API (fapi/v1/algoOrder).
+        """STOP_MARKET on USD-M is a conditional algo order (POST /fapi/v1/algoOrder).
 
-        Since 2025-12-09, Binance requires conditional orders to use the algoOrder endpoint.
-        Uses exchange.request() for compatibility with older ccxt versions.
+        Use ccxt create_order so the correct path and body fields (`triggerPrice`, etc.)
+        match current Binance + ccxt versions. Passing path `fapi/v1/algoOrder` into
+        `request()` would produce `/fapi/v1/fapi/v1/algoOrder` and Binance returns -5000.
         """
         formatted = self._format_symbol(symbol)
-        base = formatted.replace("/", "").replace(":USDT", "")
-
-        combos = []
+        side_lc = side.lower()
+        combos: list[dict] = []
         if self.hedge_mode:
             combos.append({"positionSide": position_side})
             combos.append({})
         else:
+            p0: dict = {}
+            if reduce_only:
+                p0["reduceOnly"] = True
+            combos.append(p0)
             combos.append({})
 
-        last_exc = None
+        last_exc: Exception | None = None
         for idx, extra in enumerate(combos):
             try:
-                params = {
-                    "symbol": base,
-                    "side": side.upper(),
-                    "type": "STOP_MARKET",
-                    "algoType": "CONDITIONAL",
-                    "quantity": str(amount),
-                    "stopPrice": str(stop_price),
+                bundle = {
+                    "triggerPrice": stop_price,
                     "workingType": "MARK_PRICE",
                     **extra,
                 }
-                order = await retry_with_backoff(
-                    f"binance.create_stop_loss_order(algo_combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
-                    lambda p=params: self.exchange.request(
-                        'algoOrder', 'fapiPrivate', 'POST', p
+                tag = f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
+                return await retry_with_backoff(
+                    tag,
+                    lambda b=bundle: self.exchange.create_order(
+                        formatted, "stop_market", side_lc, amount, None, b,
                     ),
                 )
-                return order
             except Exception as e:
                 last_exc = e
                 err_str = str(e)
                 if "-1106" in err_str or "-4061" in err_str or "-4120" in err_str:
-                    logger.debug("Stop loss algo order combo%d failed: %s, trying next", idx, e)
+                    logger.debug("Stop loss create_order combo%d failed: %s, trying next", idx, e)
                     continue
                 raise
         raise last_exc
@@ -307,7 +309,7 @@ class BinanceService(BaseExchangeService):
     async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
         """Cancel an Algo Order (conditional orders like STOP_MARKET).
 
-        Uses fapi/v1/algoOrder endpoint via exchange.request() for compatibility.
+        Path must be the segment ``algoOrder`` only; ``fapi/v1`` is already the host base.
         """
         formatted = self._format_symbol(symbol)
         base = formatted.replace("/", "").replace(":USDT", "")
@@ -318,7 +320,7 @@ class BinanceService(BaseExchangeService):
         return await retry_with_backoff(
             "binance.cancel_algo_order",
             lambda: self.exchange.request(
-                'algoOrder', 'fapiPrivate', 'DELETE', params
+                _FAPI_ALGO_ORDER_PATH, "fapiPrivate", "DELETE", params
             ),
         )
 
