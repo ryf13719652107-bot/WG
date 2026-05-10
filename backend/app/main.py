@@ -11,7 +11,7 @@ from .config import settings
 from .database import init_db, get_db, async_session
 from .models.bot_config import BotConfig
 from .models.strategy import Strategy
-from .routers import account, strategies, positions, trades, dashboard, websocket
+from .routers import account, strategies, positions, trades, dashboard, websocket, auth
 from .services.scheduler import strategy_scheduler
 from .services.exchange_factory import get_public_exchange
 from fastapi.staticfiles import StaticFiles
@@ -102,6 +102,30 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def web_ui_auth_middleware(request: Request, call_next):
+    """WEB_UI_PASSWORD 非空时，保护 /api/*（白名单除外）及部分文档路由。"""
+    from .services import ui_auth as _ua
+
+    if not _ua.auth_enabled():
+        return await call_next(request)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/"):
+        if path.startswith("/api/auth/") or path == "/api/health":
+            return await call_next(request)
+        tok = request.cookies.get(_ua.COOKIE_NAME)
+        if not _ua.verify_token(tok):
+            return JSONResponse({"detail": "需要登录"}, status_code=401)
+        return await call_next(request)
+    if path.startswith("/docs") or path.startswith("/redoc") or path == "/openapi.json":
+        tok = request.cookies.get(_ua.COOKIE_NAME)
+        if not _ua.verify_token(tok):
+            return JSONResponse({"detail": "需要登录"}, status_code=401)
+    return await call_next(request)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     import logging
@@ -114,6 +138,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Register routers — must be before SPA catch-all
+app.include_router(auth.router)
 app.include_router(account.router)
 app.include_router(strategies.router)
 app.include_router(positions.router)

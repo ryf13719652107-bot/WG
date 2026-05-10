@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, BrainCircuit, ListOrdered, History, Settings,
+  LayoutDashboard, BrainCircuit, ListOrdered, History, Settings, LogOut,
 } from 'lucide-react';
 
 const links = [
@@ -11,7 +11,13 @@ const links = [
   { to: '/settings', icon: Settings, label: '系统设置' },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  showLogout,
+  onLogout,
+}: {
+  showLogout?: boolean;
+  onLogout?: () => void;
+}) {
   return (
     <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col">
       <div className="p-4 border-b border-gray-800">
@@ -36,8 +42,20 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className="p-3 border-t border-gray-800 text-xs text-gray-600 text-center">
-        v0.2.0
+      <div className="p-3 border-t border-gray-800 space-y-2">
+        {showLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 border border-gray-800"
+          >
+            <LogOut size={14} />
+            退出登录
+          </button>
+        )}
+        <div className="text-xs text-gray-600 text-center">
+          v0.2.0
+        </div>
       </div>
     </aside>
   );

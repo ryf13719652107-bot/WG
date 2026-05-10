@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     feishu_webhook_url: Optional[str] = None
     feishu_keyword_prefix: str = "[WG]"
 
+    # 网页登录：非空则所有 /api/*（除白名单）与 /ws/* 需携带登录 Cookie
+    web_ui_password: Optional[str] = None
+
     # env_file 仅作本地可选；不配 .env 时仍从系统/服务 Environment、启动脚本 export 等读取同名变量。
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

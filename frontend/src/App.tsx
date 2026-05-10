@@ -1,4 +1,4 @@
-import { Component, ReactNode } from 'react';
+import { Component, ReactNode, useCallback, useEffect, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 import DashboardPage from './components/dashboard/DashboardPage';
@@ -7,6 +7,8 @@ import StrategyDetailPage from './components/strategy/StrategyDetailPage';
 import PositionsPage from './components/positions/PositionsPage';
 import TradesPage from './components/trades/TradesPage';
 import SettingsPage from './components/settings/SettingsPage';
+import LoginScreen from './components/auth/LoginScreen';
+import { api } from './services/api';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -36,10 +38,63 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+type Gate = 'loading' | 'login' | 'app';
+
 export default function App() {
+  const [gate, setGate] = useState<Gate>('loading');
+  const [authRequired, setAuthRequired] = useState(false);
+
+  const bootstrap = useCallback(async () => {
+    setGate('loading');
+    try {
+      const s = await api.authStatus();
+      setAuthRequired(s.auth_required);
+      if (!s.auth_required || s.authenticated) setGate('app');
+      else setGate('login');
+    } catch {
+      setGate('login');
+      setAuthRequired(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    bootstrap();
+  }, [bootstrap]);
+
+  useEffect(() => {
+    const fn = () => {
+      setGate('login');
+      setAuthRequired(true);
+    };
+    window.addEventListener('wg-auth-required', fn);
+    return () => window.removeEventListener('wg-auth-required', fn);
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      /* ignore */
+    }
+    if (authRequired) setGate('login');
+    else await bootstrap();
+  };
+
+  if (gate === 'loading') {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-950 text-gray-500 text-sm">
+        加载中…
+      </div>
+    );
+  }
+
+  if (gate === 'login') {
+    return <LoginScreen onSuccess={() => setGate('app')} />;
+  }
+
   return (
     <ErrorBoundary>
-      <AppShell>
+      <AppShell showLogout={authRequired} onLogout={handleLogout}>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/strategies" element={<StrategyPage />} />

@@ -4,10 +4,19 @@ import type { Strategy, StrategyFormData } from '../types/strategy';
 const BASE = '/api';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const path = url.startsWith('http') ? new URL(url).pathname : `${BASE}${url}`;
   const res = await fetch(`${BASE}${url}`, {
+    credentials: 'include',
     ...options,
     headers: { 'Content-Type': 'application/json', ...options?.headers },
   });
+  if (res.status === 401) {
+    if (!path.endsWith('/auth/login') && !path.endsWith('/auth/status')) {
+      window.dispatchEvent(new CustomEvent('wg-auth-required'));
+    }
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Request failed');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || 'Request failed');
@@ -17,6 +26,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  authStatus: (): Promise<{ auth_required: boolean; authenticated: boolean }> =>
+    request('/auth/status'),
+
+  login: (password: string): Promise<{ ok: boolean; auth_required?: boolean }> =>
+    request('/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
+
+  logout: (): Promise<{ ok: boolean }> =>
+    request('/auth/logout', { method: 'POST', body: JSON.stringify({}) }),
+
   // Accounts
   createAccount: (data: {
     name: string; exchange: string; api_key: string; api_secret: string;

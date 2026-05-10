@@ -1,7 +1,7 @@
 import asyncio
 import time
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from ..database import get_db
@@ -271,6 +271,8 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
         close_reason="策略删除",
         use_order_tracker=not was_running,
     )
+    # 平仓记录已写入 trades；删除持仓行，避免仅存 closed_at 脏数据
+    await db.execute(sql_delete(Position).where(Position.strategy_id == strategy_id))
     await db.delete(strategy)
     await db.commit()
 

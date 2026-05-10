@@ -3,13 +3,26 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from ..services.websocket_manager import ws_manager
 from ..services.exchange_factory import get_public_exchange
+from ..services import ui_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
 
 
+async def _require_ui_login(ws: WebSocket) -> bool:
+    """未登录则关闭连接并返回 True（调用方直接 return）。"""
+    if not ui_auth.auth_enabled():
+        return False
+    if ui_auth.verify_token(ws.cookies.get(ui_auth.COOKIE_NAME)):
+        return False
+    await ws.close(code=1008)
+    return True
+
+
 @router.websocket("/ws/market")
 async def market_websocket(websocket: WebSocket, symbols: str = Query(default="")):
+    if await _require_ui_login(websocket):
+        return
     await ws_manager.connect(websocket, "market")
     symbol_list = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else []
 
@@ -51,6 +64,8 @@ async def market_websocket(websocket: WebSocket, symbols: str = Query(default=""
 
 @router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
+    if await _require_ui_login(websocket):
+        return
     await ws_manager.connect(websocket, "dashboard")
     try:
         # 快照由 websocket_manager 单例定时任务广播（30s），此处仅保持连接并在对端关闭时退出
@@ -64,6 +79,8 @@ async def dashboard_websocket(websocket: WebSocket):
 
 @router.websocket("/ws/health")
 async def health_websocket(websocket: WebSocket):
+    if await _require_ui_login(websocket):
+        return
     await ws_manager.connect(websocket, "health")
     try:
         while True:

@@ -17,8 +17,12 @@ type DisplayRow = {
   tp_has_order: boolean;
   tp_target_only: boolean;
   opened_at_label: string;
-  exchange_only: boolean;
 };
+
+/** 与后端 exchange_base._norm_sym 等价 */
+function normSym(s: string): string {
+  return (s || '').replace(/\//g, '').replace(':USDT', '').replace('-SWAP', '').toUpperCase();
+}
 
 function exchangeNotionalUsdt(ep: ExchangePos): number {
   let u = typeof ep.usdt === 'number' ? ep.usdt : 0;
@@ -31,32 +35,49 @@ function exchangeNotionalUsdt(ep: ExchangePos): number {
   return 0;
 }
 
+/** 仅展示本地「未平仓」持仓；交易所数据只用于合并盈亏/名义。无本地记录时不显示孤儿交易所腿。 */
 function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): DisplayRow[] {
-  const norm = (s: string) => s.replace(/\//g, '').replace(':USDT', '').toUpperCase();
-  if (exchangePositions.length > 0) {
-    return exchangePositions.map((ep) => {
-      const sym = norm(ep.symbol);
-      const side = (ep.side || '').toLowerCase() as 'long' | 'short';
-      const match = dbPositions.filter(
-        (p) => norm(p.symbol) === sym && p.side === side,
-      );
-      let layer = '-';
-      if (match.length === 1) layer = `L${match[0].layer}`;
-      else if (match.length > 1) {
-        const layers = [...new Set(match.map((m) => m.layer))].sort((a, b) => a - b);
-        layer = `L${layers[0]}-L${layers[layers.length - 1]}（${match.length}层）`;
-      }
-      const tp = match.find((m) => m.take_profit_price != null)?.take_profit_price;
-      const tpId = match.some((m) => !!m.tp_limit_order_id);
-      const opened = match
-        .map((m) => m.opened_at)
-        .filter(Boolean)
-        .sort()[0];
-      const hasTpPrice = tp != null;
-      return {
-        key: `${sym}-${side}`,
-        symbol: ep.symbol,
-        side,
+  if (dbPositions.length === 0) {
+    return [];
+  }
+
+  const exMap = new Map<string, ExchangePos>();
+  for (const ep of exchangePositions || []) {
+    const side = (ep.side || '').toLowerCase();
+    const key = `${normSym(ep.symbol)}-${side}`;
+    exMap.set(key, ep);
+  }
+
+  const groupMap = new Map<string, Position[]>();
+  for (const p of dbPositions) {
+    const key = `${normSym(p.symbol)}-${p.side}`;
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key)!.push(p);
+  }
+
+  const rows: DisplayRow[] = [];
+  for (const [key, match] of groupMap) {
+    match.sort((a, b) => a.layer - b.layer);
+    const ep = exMap.get(key);
+
+    let layer = '-';
+    if (match.length === 1) layer = `L${match[0].layer}`;
+    else if (match.length > 1) {
+      const layers = [...new Set(match.map((m) => m.layer))].sort((a, b) => a - b);
+      layer = `L${layers[0]}-L${layers[layers.length - 1]}（${match.length}层）`;
+    }
+    const tpId = match.some((m) => !!m.tp_limit_order_id);
+    const hasTpPrice = match.some((m) => m.take_profit_price != null);
+    const opened = match
+      .map((m) => m.opened_at)
+      .filter(Boolean)
+      .sort()[0];
+
+    if (ep) {
+      rows.push({
+        key,
+        symbol: match[0].symbol,
+        side: match[0].side,
         notional_usdt: exchangeNotionalUsdt(ep),
         entry_price: ep.entry_price,
         unrealized_pnl: ep.unrealized_pnl,
@@ -64,29 +85,27 @@ function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): D
         tp_has_order: tpId,
         tp_target_only: hasTpPrice && !tpId,
         opened_at_label: opened ? new Date(opened as string).toLocaleString() : '-',
-        exchange_only: match.length === 0,
-      };
-    });
+      });
+    } else {
+      for (const p of match) {
+        const px = p.mark_price ?? p.entry_price;
+        rows.push({
+          key: String(p.id),
+          symbol: p.symbol,
+          side: p.side,
+          notional_usdt: px * p.quantity,
+          entry_price: p.entry_price,
+          unrealized_pnl: p.unrealized_pnl ?? 0,
+          layer: `L${p.layer}`,
+          tp_has_order: !!p.tp_limit_order_id,
+          tp_target_only: p.take_profit_price != null && !p.tp_limit_order_id,
+          opened_at_label: p.opened_at ? new Date(p.opened_at).toLocaleString() : '-',
+        });
+      }
+    }
   }
-  if (dbPositions.length > 0) {
-    return dbPositions.map((p) => {
-      const px = p.mark_price ?? p.entry_price;
-      return {
-        key: String(p.id),
-        symbol: p.symbol,
-        side: p.side,
-        notional_usdt: px * p.quantity,
-        entry_price: p.entry_price,
-        unrealized_pnl: p.unrealized_pnl ?? 0,
-        layer: `L${p.layer}`,
-        tp_has_order: !!p.tp_limit_order_id,
-        tp_target_only: p.take_profit_price != null && !p.tp_limit_order_id,
-        opened_at_label: p.opened_at ? new Date(p.opened_at).toLocaleString() : '-',
-        exchange_only: false,
-      };
-    });
-  }
-  return [];
+
+  return rows.sort((a, b) => normSym(a.symbol).localeCompare(normSym(b.symbol)));
 }
 
 export default function PositionsPage() {
@@ -109,6 +128,7 @@ export default function PositionsPage() {
       try {
         const positions = await api.listPositions({ account_id: acc });
         setDbPositions(positions);
+        setExchangePositions([]);
       } catch {
         setDbPositions([]);
       }
@@ -130,14 +150,16 @@ export default function PositionsPage() {
     [dbPositions, exchangePositions],
   );
 
-  const hasExchangeHint = exchangePositions.length > 0 && dbPositions.length === 0;
+  /** 交易所有仓但机器人库无未平仓——与删除策略后的空表区分开，仍提示对账 */
+  const hasExchangeHint =
+    (exchangePositions?.length ?? 0) > 0 && dbPositions.length === 0;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
         <h2 className="text-xl font-bold">当前持仓</h2>
         <span className="text-xs text-gray-500">
-          名义 USDT 来自交易所；限价止盈来自本地策略库 · 每 30 秒刷新
+          仅展示<strong className="text-gray-400">本地策略未平仓</strong>记录；名义/浮盈亏优先取交易所；每 60 秒刷新
           <span className="ml-2 text-gray-600 font-mono" title="每次 npm run build 更新；若与执行时间不符说明浏览器或 CDN 仍在用旧包">
             build:{__FRONTEND_BUILD_STAMP__}
           </span>
@@ -146,7 +168,7 @@ export default function PositionsPage() {
 
       {hasExchangeHint && (
         <p className="text-xs text-amber-500/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-          交易所有持仓，但本地数据库暂无对应未平仓记录。可能是数据未同步、部署过新库或仓位非本机器人开立。机器人仍可交易；必要时可对账或等待同步。
+          交易所有持仓，但本地暂无对应未平仓记录（例如策略已删除并完成平仓、或非本机器人开仓）。若刚删策略，此处应为空；若交易所仍有仓请自行在交易所核对。
         </p>
       )}
 
@@ -172,9 +194,6 @@ export default function PositionsPage() {
               >
                 <td className="p-3 font-medium font-mono">
                   {row.symbol}
-                  {row.exchange_only && (
-                    <span className="ml-1.5 text-[10px] text-gray-500 align-middle">仅交易所</span>
-                  )}
                 </td>
                 <td className={`p-3 ${row.side === 'long' ? 'text-green-400' : 'text-red-400'}`}>
                   {row.side === 'long' ? '做多' : '做空'}
