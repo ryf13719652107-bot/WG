@@ -27,6 +27,10 @@ async def list_trades(
     side: str | None = None,  # 'long' or 'short'
     strategy_id: int | None = None,
     account_id: int | None = None,
+    close_reason: str | None = Query(
+        default=None,
+        description="平仓原因精确匹配；传 tp_sl 表示仅止盈或止损",
+    ),
     limit: int = Query(default=50, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -50,6 +54,15 @@ async def list_trades(
     if account_id is not None:
         stmt = stmt.where(Trade.account_id == account_id)
         count_stmt = count_stmt.where(Trade.account_id == account_id)
+
+    if close_reason:
+        if close_reason == "tp_sl":
+            cr_clause = Trade.close_reason.in_(("take_profit", "stop_loss"))
+            stmt = stmt.where(cr_clause)
+            count_stmt = count_stmt.where(cr_clause)
+        else:
+            stmt = stmt.where(Trade.close_reason == close_reason)
+            count_stmt = count_stmt.where(Trade.close_reason == close_reason)
 
     stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)

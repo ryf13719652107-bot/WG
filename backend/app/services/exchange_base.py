@@ -68,6 +68,23 @@ class BaseExchangeService(ABC):
         s = s.replace("-", "")
         return s
 
+    @staticmethod
+    def position_row_matches_leg(
+        pos: dict, symbol: str, side_lower: str, formatted_symbol: str
+    ) -> bool:
+        """判断 ccxt 返回的持仓行是否属于给定交易对与方向（兼容 hedge 下 side 在 info.posSide / positionSide）。"""
+        psym = BaseExchangeService._norm_sym(str(pos.get("symbol") or ""))
+        want = BaseExchangeService._norm_sym(symbol)
+        if psym != want and (pos.get("symbol") or "") != formatted_symbol:
+            return False
+        p_side = (pos.get("side") or "").lower()
+        if not p_side:
+            info = pos.get("info") or {}
+            if isinstance(info, dict):
+                raw = info.get("posSide") or info.get("positionSide") or ""
+                p_side = str(raw).lower()
+        return p_side == (side_lower or "").lower()
+
     # ---- Market Data (Public) ----
 
     @abstractmethod

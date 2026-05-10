@@ -15,6 +15,7 @@ from ..models.bot_config import BotConfig
 from ..models.account import Account
 from ..schemas.dashboard import DashboardSnapshot
 from ..services.exchange_factory import get_exchange_service
+from ..services.exchange_base import BaseExchangeService
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -67,39 +68,46 @@ async def _fetch_dashboard_exchange_slice(exchange) -> dict[str, Any]:
             positions = await asyncio.wait_for(exchange.fetch_positions(), timeout=25.0)
             for p in positions:
                 contracts = float(p.get("contracts", 0) or 0)
-                if contracts > 0:
-                    open_positions += 1
-                    entry_price = float(p.get("entryPrice", 0) or 0)
-                    mark_price = float(p.get("markPrice", 0) or 0)
-                    side = (p.get("side") or "").lower()
-                    symbol = (p.get("symbol") or "").replace("/", "").replace(":USDT", "")
-                    upnl = float(p.get("unrealizedPnl", 0) or 0)
-                    unrealized_pnl += upnl
+                if contracts <= 0:
+                    continue
+                side = (p.get("side") or "").lower()
+                if not side:
+                    info = p.get("info") or {}
+                    if isinstance(info, dict):
+                        side = (info.get("posSide") or "").lower()
+                if side not in ("long", "short"):
+                    continue
+                open_positions += 1
+                entry_price = float(p.get("entryPrice", 0) or 0)
+                mark_price = float(p.get("markPrice", 0) or 0)
+                symbol = BaseExchangeService._norm_sym(str(p.get("symbol") or ""))
+                upnl = float(p.get("unrealizedPnl", 0) or 0)
+                unrealized_pnl += upnl
+                if side == "short":
+                    unrealized_pnl_short += upnl
+                else:
+                    unrealized_pnl_long += upnl
+                pnl_pct = 0.0
+                if entry_price > 0:
                     if side == "short":
-                        unrealized_pnl_short += upnl
+                        pnl_pct = (entry_price - mark_price) / entry_price * 100
                     else:
-                        unrealized_pnl_long += upnl
-                    pnl_pct = 0.0
-                    if entry_price > 0:
-                        if side == "short":
-                            pnl_pct = (entry_price - mark_price) / entry_price * 100
-                        else:
-                            pnl_pct = (mark_price - entry_price) / entry_price * 100
-                    notional = float(p.get("notional", 0) or 0)
-                    if abs(notional) < 1e-12 and contracts > 0 and mark_price > 0:
-                        cs = float(p.get("contractSize", 1) or 1)
-                        notional = abs(contracts * mark_price * cs)
-                    total_notional += notional
-                    exchange_positions.append({
-                        "symbol": symbol,
-                        "side": side,
-                        "usdt": round(notional, 2),
-                        "contracts": contracts,
-                        "entry_price": round(entry_price, 4),
-                        "mark_price": round(mark_price, 4),
-                        "unrealized_pnl": round(float(p.get("unrealizedPnl", 0) or 0), 2),
-                        "pnl_pct": round(pnl_pct, 2),
-                    })
+                        pnl_pct = (mark_price - entry_price) / entry_price * 100
+                notional = float(p.get("notional", 0) or 0)
+                if abs(notional) < 1e-12 and contracts > 0 and mark_price > 0:
+                    cs = float(p.get("contractSize", 1) or 1)
+                    notional = abs(contracts * mark_price * cs)
+                total_notional += notional
+                exchange_positions.append({
+                    "symbol": symbol,
+                    "side": side,
+                    "usdt": round(notional, 2),
+                    "contracts": contracts,
+                    "entry_price": round(entry_price, 4),
+                    "mark_price": round(mark_price, 4),
+                    "unrealized_pnl": round(float(p.get("unrealizedPnl", 0) or 0), 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                })
         except Exception as e:
             logging.error("Position fetch error for dashboard (%s): %s", ex_id, e)
 

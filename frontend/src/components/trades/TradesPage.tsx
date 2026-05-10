@@ -10,6 +10,7 @@ export default function TradesPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [sideFilter, setSideFilter] = useState<'' | 'long' | 'short'>('');
+  const [closeReasonFilter, setCloseReasonFilter] = useState<'' | 'tp_sl' | 'take_profit' | 'stop_loss'>('');
   const [symbolSearch, setSymbolSearch] = useState('');
   const limit = 50;
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
@@ -21,14 +22,15 @@ export default function TradesPage() {
       account_id: selectedAccountId ?? undefined,
       side: sideFilter || undefined,
       symbol: symbolSearch.trim() || undefined,
+      close_reason: closeReasonFilter || undefined,
     });
     setTrades(data.trades);
     setTotal(data.total);
-  }, [page, selectedAccountId, sideFilter, symbolSearch]);
+  }, [page, selectedAccountId, sideFilter, symbolSearch, closeReasonFilter]);
   loadRef.current = load;
 
-  useEffect(() => { setPage(0); }, [selectedAccountId, sideFilter, symbolSearch]);
-  useEffect(() => { load(); }, [page, selectedAccountId, sideFilter, symbolSearch]);
+  useEffect(() => { setPage(0); }, [selectedAccountId, sideFilter, symbolSearch, closeReasonFilter]);
+  useEffect(() => { load(); }, [page, selectedAccountId, sideFilter, symbolSearch, closeReasonFilter]);
 
   useEffect(() => {
     const timer = setInterval(() => loadRef.current(), 30000);
@@ -42,7 +44,13 @@ export default function TradesPage() {
   };
 
   const handleDeleteFiltered = async () => {
-    const desc = [symbolSearch && `币种=${symbolSearch}`, sideFilter && `方向=${sideFilter === 'long' ? '多' : '空'}`].filter(Boolean).join(', ');
+    const desc = [
+      symbolSearch && `币种=${symbolSearch}`,
+      sideFilter && `方向=${sideFilter === 'long' ? '多' : '空'}`,
+      closeReasonFilter === 'tp_sl' && '平仓原因=止盈或止损',
+      closeReasonFilter === 'take_profit' && '平仓原因=止盈',
+      closeReasonFilter === 'stop_loss' && '平仓原因=止损',
+    ].filter(Boolean).join(', ');
     if (!confirm(`确定要删除当前筛选的所有交易记录吗？\n筛选条件：${desc || '全部'}\n此操作不可恢复。`)) return;
     await api.deleteFilteredTrades({
       symbol: symbolSearch.trim() || undefined,
@@ -60,6 +68,7 @@ export default function TradesPage() {
   const clearFilters = () => {
     setSymbolSearch('');
     setSideFilter('');
+    setCloseReasonFilter('');
     setPage(0);
   };
 
@@ -106,7 +115,20 @@ export default function TradesPage() {
             </button>
           ))}
         </div>
-        {(symbolSearch || sideFilter) && (
+        <select
+          value={closeReasonFilter}
+          onChange={(e) =>
+            setCloseReasonFilter(e.target.value as '' | 'tp_sl' | 'take_profit' | 'stop_loss')
+          }
+          className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+          title="按平仓原因筛选"
+        >
+          <option value="">平仓原因·全部</option>
+          <option value="tp_sl">止盈或止损</option>
+          <option value="take_profit">仅止盈</option>
+          <option value="stop_loss">仅止损</option>
+        </select>
+        {(symbolSearch || sideFilter || closeReasonFilter) && (
           <button onClick={clearFilters} className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
             <X size={12} /> 清除筛选
           </button>
@@ -151,8 +173,8 @@ export default function TradesPage() {
                     t.close_reason === 'take_profit' ? 'bg-green-600/20 text-green-400' :
                     t.close_reason === 'stop_loss' ? 'bg-red-600/20 text-red-400' :
                     t.close_reason === 'panic_close' || t.close_reason === 'panic_loss' ? 'bg-yellow-600/20 text-yellow-400' :
+                    t.close_reason === 'exchange_already_flat' ? 'bg-sky-600/20 text-sky-300' :
                     t.close_reason === 'sync' ? 'bg-blue-600/20 text-blue-400' :
-                    t.close_reason === 'margin_stop' ? 'bg-orange-600/20 text-orange-400' :
                     t.close_reason === 'strategy_deleted' || t.close_reason === '策略删除' ? 'bg-slate-600/30 text-slate-300' :
                     'bg-gray-700 text-gray-400'
                   }`}>

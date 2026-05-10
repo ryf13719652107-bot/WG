@@ -3,6 +3,7 @@ import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
 import type { DashboardData, Position } from '../../types';
 import { Check, Minus } from 'lucide-react';
+import { normSym } from '../../utils/symbol';
 
 type ExchangePos = DashboardData['exchange_positions'][number];
 
@@ -19,12 +20,9 @@ type DisplayRow = {
   opened_at_label: string;
   /** 可调用 POST /api/positions/:id/close（交易所已平时会仅清本地） */
   positionId?: number;
+  /** 仅交易所可见（本地无未平仓策略记录） */
+  orphanExchange?: boolean;
 };
-
-/** 与后端 exchange_base._norm_sym 等价 */
-function normSym(s: string): string {
-  return (s || '').replace(/\//g, '').replace(':USDT', '').replace('-SWAP', '').toUpperCase();
-}
 
 function exchangeNotionalUsdt(ep: ExchangePos): number {
   let u = typeof ep.usdt === 'number' ? ep.usdt : 0;
@@ -37,15 +35,12 @@ function exchangeNotionalUsdt(ep: ExchangePos): number {
   return 0;
 }
 
-/** 仅展示本地「未平仓」持仓；交易所数据只用于合并盈亏/名义。无本地记录时不显示孤儿交易所腿。 */
+/** 合并本地未平仓与交易所持仓；无本地记录时仍展示交易所腿（OKX/手工开仓可对账）。 */
 function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): DisplayRow[] {
-  if (dbPositions.length === 0) {
-    return [];
-  }
-
   const exMap = new Map<string, ExchangePos>();
   for (const ep of exchangePositions || []) {
     const side = (ep.side || '').toLowerCase();
+    if (side !== 'long' && side !== 'short') continue;
     const key = `${normSym(ep.symbol)}-${side}`;
     exMap.set(key, ep);
   }
@@ -58,9 +53,12 @@ function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): D
   }
 
   const rows: DisplayRow[] = [];
+  const coveredExKeys = new Set<string>();
+
   for (const [key, match] of groupMap) {
     match.sort((a, b) => a.layer - b.layer);
     const ep = exMap.get(key);
+    coveredExKeys.add(key);
 
     let layer = '-';
     if (match.length === 1) layer = `L${match[0].layer}`;
@@ -101,11 +99,29 @@ function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): D
           layer: `L${p.layer}`,
           tp_has_order: !!p.tp_limit_order_id,
           tp_target_only: p.take_profit_price != null && !p.tp_limit_order_id,
-          opened_at_label: p.opened_at ? new Date(p.opened_at).toLocaleString() : '-',
+          opened_at_label: p.opened_at ? new Date(p.opened_at as string).toLocaleString() : '-',
           positionId: p.id,
         });
       }
     }
+  }
+
+  for (const [key, ep] of exMap) {
+    if (coveredExKeys.has(key)) continue;
+    const side = (ep.side || 'long').toLowerCase() as 'long' | 'short';
+    rows.push({
+      key: `ex-${key}`,
+      symbol: normSym(ep.symbol),
+      side,
+      notional_usdt: exchangeNotionalUsdt(ep),
+      entry_price: ep.entry_price,
+      unrealized_pnl: ep.unrealized_pnl,
+      layer: '—',
+      tp_has_order: false,
+      tp_target_only: false,
+      opened_at_label: '交易所',
+      orphanExchange: true,
+    });
   }
 
   return rows.sort((a, b) => normSym(a.symbol).localeCompare(normSym(b.symbol)));
@@ -177,7 +193,7 @@ export default function PositionsPage() {
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
         <h2 className="text-xl font-bold">当前持仓</h2>
         <span className="text-xs text-gray-500">
-          仅展示<strong className="text-gray-400">本地策略未平仓</strong>记录；名义/浮盈亏优先取交易所；每 60 秒刷新
+          优先展示<strong className="text-gray-400">本地策略未平仓</strong>；无本地记录时列出<strong className="text-gray-400">交易所持仓</strong>（只读）。名义/浮盈亏优先取交易所；每 60 秒刷新
           <span className="ml-2 text-gray-600 font-mono" title="每次 npm run build 更新；若与执行时间不符说明浏览器或 CDN 仍在用旧包">
             build:{__FRONTEND_BUILD_STAMP__}
           </span>
@@ -186,7 +202,7 @@ export default function PositionsPage() {
 
       {hasExchangeHint && (
         <p className="text-xs text-amber-500/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-          交易所有持仓，但本地暂无对应未平仓记录（例如策略已删除并完成平仓、或非本机器人开仓）。若刚删策略，此处应为空；若交易所仍有仓请自行在交易所核对。
+          下方表格中「开仓时间」为<strong className="text-amber-200">交易所</strong>的行表示：交易所有持仓但本地无未平仓策略记录（例如非本机器人开仓、或本地已清理）。限价止盈列对这类持仓不适用。
         </p>
       )}
 
@@ -209,7 +225,9 @@ export default function PositionsPage() {
             {rows.map((row) => (
               <tr
                 key={row.key}
-                className="border-b border-gray-800/50 hover:bg-gray-800/30"
+                className={`border-b border-gray-800/50 hover:bg-gray-800/30 ${
+                  row.orphanExchange ? 'bg-amber-500/5' : ''
+                }`}
               >
                 <td className="p-3 font-medium font-mono">
                   {row.symbol}

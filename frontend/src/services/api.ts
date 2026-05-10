@@ -90,13 +90,20 @@ export const api = {
 
   // Trades
   listTrades: (params?: {
-    strategy_id?: number; symbol?: string; side?: string; account_id?: number; limit?: number; offset?: number;
+    strategy_id?: number;
+    symbol?: string;
+    side?: string;
+    account_id?: number;
+    close_reason?: string;
+    limit?: number;
+    offset?: number;
   }): Promise<{ trades: Trade[]; total: number }> => {
     const qs = new URLSearchParams();
     if (params?.strategy_id) qs.set('strategy_id', String(params.strategy_id));
     if (params?.symbol) qs.set('symbol', params.symbol);
     if (params?.side) qs.set('side', params.side);
     if (params?.account_id != null) qs.set('account_id', String(params.account_id));
+    if (params?.close_reason) qs.set('close_reason', params.close_reason);
     if (params?.limit) qs.set('limit', String(params.limit));
     if (params?.offset) qs.set('offset', String(params.offset));
     const q = qs.toString();

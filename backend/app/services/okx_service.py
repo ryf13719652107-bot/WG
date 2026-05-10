@@ -48,10 +48,12 @@ class OkxService(BaseExchangeService):
     # ---- Symbol formatting ----
 
     def _format_symbol(self, symbol: str) -> str:
-        """BTCUSDT -> BTC/USDT:USDT (ccxt unified)"""
-        s = self._norm_sym(symbol)
+        """BTCUSDT -> BTC/USDT:USDT（与 Binance 统一 ccxt 永续写法一致）。"""
         if "/" in symbol:
+            if ":USDT" not in symbol and symbol.endswith("/USDT"):
+                return f"{symbol}:USDT"
             return symbol
+        s = self._norm_sym(symbol)
         if s.endswith("USDT"):
             base = s[:-4]
             return f"{base}/USDT:USDT"
@@ -87,18 +89,41 @@ class OkxService(BaseExchangeService):
         )
 
     async def fetch_positions(self, symbols: Optional[list[str]] = None) -> list[dict]:
-        formatted = [self._format_symbol(s) for s in symbols] if symbols else None
-        return await retry_with_backoff(
-            "okx.fetch_positions",
-            lambda: self.exchange.fetch_positions(formatted),
-        )
+        """与 BinanceService 相同策略：指定 symbols 失败时 load_markets 后重试，再退回全量并按 norm 过滤。"""
+        if not symbols:
+            return await retry_with_backoff(
+                "okx.fetch_positions(all)",
+                lambda: self.exchange.fetch_positions(None),
+            )
+        formatted = [self._format_symbol(s) for s in symbols]
+        try:
+            return await retry_with_backoff(
+                "okx.fetch_positions",
+                lambda: self.exchange.fetch_positions(formatted),
+            )
+        except Exception as e:
+            msg = str(e).lower()
+            if "does not have market symbol" in msg or "marketsymbol" in msg or "invalid symbol" in msg:
+                try:
+                    await self.exchange.load_markets(True)
+                    return await self.exchange.fetch_positions(formatted)
+                except Exception as e2:
+                    logger.debug("okx.fetch_positions(%s) after load_markets: %s", symbols, e2)
+                logger.warning("okx.fetch_positions symbol missing, fallback all: %s", symbols)
+                raw = await self.exchange.fetch_positions(None)
+                want = {self._norm_sym(s) for s in symbols}
+                return [p for p in raw if self._norm_sym(p.get("symbol") or "") in want]
+            raise
 
     async def fetch_leverage(self, symbol: str) -> float:
         try:
             positions = await self.fetch_positions([symbol])
+            formatted = self._format_symbol(symbol)
+            want = self._norm_sym(symbol)
             for p in positions:
-                if p.get("symbol") == self._format_symbol(symbol):
-                    return float(p.get("leverage", 20))
+                if self._norm_sym(str(p.get("symbol") or "")) != want and p.get("symbol") != formatted:
+                    continue
+                return float(p.get("leverage", 20))
         except Exception:
             pass
         return 20.0
@@ -145,66 +170,108 @@ class OkxService(BaseExchangeService):
 
     # ---- Orders ----
 
-    def _order_params(self, position_side: str, reduce_only: bool = False) -> dict:
-        params: dict = {}
+    def _order_param_combos(self, position_side: str, reduce_only: bool) -> list[dict]:
+        """与 BinanceService._create_order_with_fallback 相同的组合顺序（hedge：posSide+reduceOnly → posSide → 空）。"""
+        pos_side = "long" if position_side.upper() == "LONG" else "short"
+        combos: list[dict] = []
         if self.hedge_mode:
-            # OKX uses posSide in hedge mode
-            pos_side = "long" if position_side.upper() == "LONG" else "short"
-            params["posSide"] = pos_side
+            p1: dict = {"posSide": pos_side}
             if reduce_only:
-                params["reduceOnly"] = True
-        if not self.hedge_mode and reduce_only:
-            params["reduceOnly"] = True
-        return params
+                p1["reduceOnly"] = True
+            combos.append(p1)
+            if reduce_only:
+                combos.append({"posSide": pos_side})
+            combos.append({})
+        else:
+            p0: dict = {}
+            if reduce_only:
+                p0["reduceOnly"] = True
+            combos.append(p0)
+            combos.append({})
+        return combos
+
+    @staticmethod
+    def _okx_combo_error_retryable(err: Exception) -> bool:
+        """OKX / ccxt 常见可重试：reduceOnly 冗余、posSide 与持仓模式不匹配等。"""
+        err_str = str(err).lower()
+        needles = (
+            "reduceonly", "reduce only",
+            "posside", "pos side", "position side",
+            "51169", "51119", "51120", "51121", "51020", "50276",
+            "-1106", "-4061",
+        )
+        return any(n in err_str for n in needles)
+
+    async def _create_order_with_fallback(
+        self,
+        formatted_symbol: str,
+        order_type: str,
+        side: str,
+        amount: float,
+        price: float | None,
+        reduce_only: bool,
+        position_side: str,
+        label: str,
+        extra_params: dict | None = None,
+    ) -> dict:
+        combos = self._order_param_combos(position_side, reduce_only)
+        last_exc: Exception | None = None
+        for idx, combo in enumerate(combos):
+            params = dict(extra_params or {})
+            params.update(combo)
+            try:
+                extra: dict = {
+                    "type": order_type,
+                    "side": side,
+                    "amount": amount,
+                    "params": params if params else None,
+                }
+                if price is not None:
+                    extra["price"] = price
+                tag = f"okx.create_{label}_order(combo{idx})" if idx > 0 else f"okx.create_{label}_order"
+                return await retry_with_backoff(
+                    tag,
+                    lambda s=formatted_symbol, e=extra: self.exchange.create_order(symbol=s, **e),
+                )
+            except Exception as e:
+                last_exc = e
+                if self._okx_combo_error_retryable(e):
+                    logger.debug("OKX order %s combo%d: %s, trying next", label, idx, e)
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
 
     async def create_market_order(
         self, symbol: str, side: str, amount: float,
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
-        return await retry_with_backoff(
-            "okx.create_market_order",
-            lambda: self.exchange.create_order(
-                symbol=self._format_symbol(symbol),
-                type="market",
-                side=side,
-                amount=amount,
-                params=self._order_params(position_side, reduce_only),
-            ),
+        formatted = self._format_symbol(symbol)
+        return await self._create_order_with_fallback(
+            formatted, "market", side, amount, None,
+            reduce_only, position_side, "market", None,
         )
 
     async def create_limit_order(
         self, symbol: str, side: str, amount: float, price: float,
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
-        return await retry_with_backoff(
-            "okx.create_limit_order",
-            lambda: self.exchange.create_order(
-                symbol=self._format_symbol(symbol),
-                type="limit",
-                side=side,
-                amount=amount,
-                price=price,
-                params=self._order_params(position_side, reduce_only),
-            ),
+        formatted = self._format_symbol(symbol)
+        return await self._create_order_with_fallback(
+            formatted, "limit", side, amount, price,
+            reduce_only, position_side, "limit", None,
         )
 
     async def create_stop_loss_order(
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a stop-loss market order for OKX."""
-        params = self._order_params(position_side, reduce_only)
-        params["stopPrice"] = stop_price
-        params["triggerPrice"] = stop_price
-        return await retry_with_backoff(
-            "okx.create_stop_loss_order",
-            lambda: self.exchange.create_order(
-                symbol=self._format_symbol(symbol),
-                type="market",
-                side=side,
-                amount=amount,
-                params=params,
-            ),
+        """止损市价单：参数组合回退与市价单一致。"""
+        formatted = self._format_symbol(symbol)
+        extra = {"stopPrice": stop_price, "triggerPrice": stop_price}
+        return await self._create_order_with_fallback(
+            formatted, "market", side, amount, None,
+            reduce_only, position_side, "stop_loss", extra,
         )
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
@@ -222,8 +289,7 @@ class OkxService(BaseExchangeService):
         positions = await self.fetch_positions([symbol])
         total = 0.0
         for pos in positions:
-            p_side = (pos.get("side") or "").lower()
-            if pos.get("symbol") == formatted and p_side == side.lower():
+            if BaseExchangeService.position_row_matches_leg(pos, symbol, side.lower(), formatted):
                 total += float(pos.get("contracts", 0) or 0)
 
         if total <= 0:

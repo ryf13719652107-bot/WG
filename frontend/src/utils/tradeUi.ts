@@ -10,6 +10,8 @@ export function formatCloseReason(cr: string | undefined | null): string {
     margin_stop: '保证金止损',
     manual: '手动平仓',
     strategy_deleted: '策略删除',
+    策略删除: '策略删除',
+    exchange_already_flat: '交易所已平仓',
   };
   return labels[cr] ?? cr;
 }

@@ -387,9 +387,8 @@ class BinanceService(BaseExchangeService):
 
         total_contracts = 0.0
         for pos in positions:
-            pos_side_ex = (pos.get("side") or "").lower()
-            if pos.get("symbol") == formatted and pos_side_ex == side.lower() and float(pos.get("contracts", 0)) > 0:
-                total_contracts += float(pos.get("contracts"))
+            if BaseExchangeService.position_row_matches_leg(pos, symbol, side.lower(), formatted):
+                total_contracts += float(pos.get("contracts", 0) or 0)
 
         if total_contracts <= 0:
             logger.warning("close_position: no contracts for %s %s", symbol, side)
