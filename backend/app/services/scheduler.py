@@ -150,7 +150,12 @@ class StrategyScheduler:
                     avg = float(raw.get("average", 0) or 0)
                     if avg > 0:
                         co.price = avg
-                    logger.info("WS order update: %s status=%s filled=%.4f for strategy %d", oid, ws_status, co.filled, strategy_id)
+                    if ws_status in ("closed", "filled"):
+                        co.status = OrderState.FILLED
+                        logger.info("WS order FILLED: %s purpose=%s filled=%.4f price=%.4f for strategy %d", oid, co.purpose, co.filled, co.price, strategy_id)
+                    elif ws_status in ("canceled", "cancelled"):
+                        co.status = OrderState.CANCELED
+                        logger.info("WS order CANCELED: %s for strategy %d", oid, strategy_id)
                     asyncio.create_task(self._execute_strategy(strategy_id))
             except asyncio.CancelledError:
                 break

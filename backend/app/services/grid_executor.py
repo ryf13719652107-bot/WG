@@ -314,13 +314,19 @@ class GridExecutor:
     async def _check_tp_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
         """Check if TP limit orders have filled. If so, close all and reopen."""
         tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
+        filled_orders = order_tracker.get_filled(strategy.id, "tp")
+        all_orders = {o.order_id: o for o in tp_orders + filled_orders}
         filled = False
-        for o in tp_orders:
-            if o.symbol == symbol:
-                updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
-                if updated and updated.status == OrderState.FILLED:
-                    filled = True
-                    break
+        for o in all_orders.values():
+            if o.symbol != symbol:
+                continue
+            if o.status == OrderState.FILLED:
+                filled = True
+                break
+            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+            if updated and updated.status == OrderState.FILLED:
+                filled = True
+                break
 
         if not filled:
             return False
@@ -350,23 +356,32 @@ class GridExecutor:
     async def _check_grid_add_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
         """Check if grid add limit orders have filled. Update positions and re-place orders."""
         add_orders = order_tracker.get_pending_by_purpose(strategy.id, "grid_add")
+        filled_orders = order_tracker.get_filled(strategy.id, "grid_add")
+        all_orders = {o.order_id: o for o in add_orders + filled_orders}
         any_filled = False
-        for o in add_orders:
+        for o in all_orders.values():
             if o.symbol != symbol:
                 continue
-            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
-            if not updated or updated.status != OrderState.FILLED:
-                continue
-
-            # Grid add filled → record new position
+            if o.status != OrderState.FILLED:
+                updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+                if not updated or updated.status != OrderState.FILLED:
+                    continue
             side = strategy.direction
             position_side = "LONG" if side == "long" else "SHORT"
 
-            filled_qty = float(updated.filled) if updated.filled > 0 else float(o.amount)
-            fill_price = float(updated.price) if updated.price > 0 else float(o.price)
+            filled_qty = float(o.filled) if o.filled > 0 else float(o.amount)
+            fill_price = float(o.price) if o.price > 0 else 0.0
+
+            if filled_qty <= 0 or fill_price <= 0:
+                logger.warning("Grid add filled but invalid qty/price: %s qty=%.4f price=%.4f", o.order_id, filled_qty, fill_price)
+                continue
 
             max_level = max((p.grid_level for p in positions), default=0)
             next_level = max_level + 1
+
+            existing = [p for p in positions if p.exchange_order_id == o.order_id]
+            if existing:
+                continue
 
             pos = Position(
                 strategy_id=strategy.id,
