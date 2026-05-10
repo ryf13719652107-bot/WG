@@ -67,14 +67,10 @@ async def _fetch_dashboard_exchange_slice(exchange) -> dict[str, Any]:
         try:
             positions = await asyncio.wait_for(exchange.fetch_positions(), timeout=25.0)
             for p in positions:
-                contracts = float(p.get("contracts", 0) or 0)
+                contracts = BaseExchangeService.position_row_contracts_abs(p)
                 if contracts <= 0:
                     continue
-                side = (p.get("side") or "").lower()
-                if not side:
-                    info = p.get("info") or {}
-                    if isinstance(info, dict):
-                        side = (info.get("posSide") or "").lower()
+                side = BaseExchangeService.position_row_side_lower(p)
                 if side not in ("long", "short"):
                     continue
                 open_positions += 1

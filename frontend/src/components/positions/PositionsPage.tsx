@@ -3,7 +3,7 @@ import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
 import type { DashboardData, Position } from '../../types';
 import { Check, Minus } from 'lucide-react';
-import { normSym } from '../../utils/symbol';
+import { normSym, normExchangeLegSide } from '../../utils/symbol';
 
 type ExchangePos = DashboardData['exchange_positions'][number];
 
@@ -39,8 +39,8 @@ function exchangeNotionalUsdt(ep: ExchangePos): number {
 function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): DisplayRow[] {
   const exMap = new Map<string, ExchangePos>();
   for (const ep of exchangePositions || []) {
-    const side = (ep.side || '').toLowerCase();
-    if (side !== 'long' && side !== 'short') continue;
+    const side = normExchangeLegSide(ep.side);
+    if (!side) continue;
     const key = `${normSym(ep.symbol)}-${side}`;
     exMap.set(key, ep);
   }
@@ -108,7 +108,7 @@ function buildRows(dbPositions: Position[], exchangePositions: ExchangePos[]): D
 
   for (const [key, ep] of exMap) {
     if (coveredExKeys.has(key)) continue;
-    const side = (ep.side || 'long').toLowerCase() as 'long' | 'short';
+    const side = (normExchangeLegSide(ep.side) ?? 'long') as 'long' | 'short';
     rows.push({
       key: `ex-${key}`,
       symbol: normSym(ep.symbol),

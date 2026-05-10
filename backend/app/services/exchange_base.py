@@ -77,13 +77,26 @@ class BaseExchangeService(ABC):
         want = BaseExchangeService._norm_sym(symbol)
         if psym != want and (pos.get("symbol") or "") != formatted_symbol:
             return False
-        p_side = (pos.get("side") or "").lower()
-        if not p_side:
-            info = pos.get("info") or {}
-            if isinstance(info, dict):
-                raw = info.get("posSide") or info.get("positionSide") or ""
-                p_side = str(raw).lower()
+        p_side = BaseExchangeService.position_row_side_lower(pos)
         return p_side == (side_lower or "").lower()
+
+    @staticmethod
+    def position_row_side_lower(pos: dict) -> str:
+        """ccxt 持仓行的多空方向；OKX 等常在 info.posSide / positionSide。"""
+        s = (pos.get("side") or "").strip().lower()
+        if s in ("long", "short"):
+            return s
+        info = pos.get("info") or {}
+        if isinstance(info, dict):
+            raw = str(info.get("posSide") or info.get("positionSide") or "").strip().lower()
+            if raw in ("long", "short"):
+                return raw
+        return ""
+
+    @staticmethod
+    def position_row_contracts_abs(pos: dict) -> float:
+        """持仓张数/数量；部分所对空头为负 contracts，统一取绝对值。"""
+        return abs(float(pos.get("contracts", 0) or 0))
 
     # ---- Market Data (Public) ----
 

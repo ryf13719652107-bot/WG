@@ -25,6 +25,13 @@ class GridExecutor:
     5. SL fill → close all + reopen initial
     """
 
+    @staticmethod
+    def _order_symbol_matches(tracker_symbol: str, strategy_symbol: str) -> bool:
+        """order_tracker 里存的 symbol 与 strategy.symbol 可能格式不同（如 OKX ccxt 写法）。"""
+        return BaseExchangeService._norm_sym(tracker_symbol) == BaseExchangeService._norm_sym(
+            strategy_symbol
+        )
+
     MAX_CONSECUTIVE_FAILURES = 3
     MAX_ORDER_QTY = 1000000.0
 
@@ -78,10 +85,10 @@ class GridExecutor:
             rsym = BaseExchangeService._norm_sym(str(rp.get("symbol") or ""))
             if rsym != want:
                 continue
-            p_side = (rp.get("side") or "").lower()
+            p_side = BaseExchangeService.position_row_side_lower(rp)
             if p_side != side:
                 continue
-            c = abs(float(rp.get("contracts") or 0))
+            c = BaseExchangeService.position_row_contracts_abs(rp)
             if c <= 0:
                 continue
             ep = float(rp.get("entryPrice") or rp.get("entry_price") or 0)
@@ -492,7 +499,7 @@ class GridExecutor:
         all_orders = {o.order_id: o for o in tp_orders + filled_orders}
         filled = False
         for o in all_orders.values():
-            if o.symbol != symbol:
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
                 continue
             if o.status == OrderState.FILLED:
                 filled = True
@@ -552,7 +559,7 @@ class GridExecutor:
         all_orders = {o.order_id: o for o in add_orders + filled_orders}
         any_filled = False
         for o in all_orders.values():
-            if o.symbol != symbol:
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
                 continue
             if o.status != OrderState.FILLED:
                 updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
@@ -671,7 +678,7 @@ class GridExecutor:
         """Cancel all existing TP limit orders for this strategy+symbol."""
         tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
         for o in tp_orders:
-            if o.symbol == symbol:
+            if GridExecutor._order_symbol_matches(o.symbol, symbol):
                 try:
                     await exchange.cancel_order(o.order_id, o.symbol)
                 except Exception as e:
@@ -681,7 +688,7 @@ class GridExecutor:
         """Cancel all existing stop loss orders for this strategy+symbol."""
         sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
         for o in sl_orders:
-            if o.symbol == symbol:
+            if GridExecutor._order_symbol_matches(o.symbol, symbol):
                 try:
                     await exchange.cancel_algo_order(o.order_id, o.symbol)
                     logger.debug("Cancelled SL algo order %s", o.order_id)
@@ -698,7 +705,7 @@ class GridExecutor:
         all_orders = {o.order_id: o for o in sl_orders + filled_orders}
         filled = False
         for o in all_orders.values():
-            if o.symbol != symbol:
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
                 continue
             if o.status == OrderState.FILLED:
                 filled = True
@@ -847,7 +854,7 @@ class GridExecutor:
         # Cancel all pending orders first
         pending = order_tracker.get_active_for_strategy(strategy.id)
         for o in pending:
-            if o.symbol == symbol:
+            if GridExecutor._order_symbol_matches(o.symbol, symbol):
                 try:
                     await exchange.cancel_order(o.order_id, o.symbol)
                 except Exception:

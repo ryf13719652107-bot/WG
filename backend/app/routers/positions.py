@@ -13,14 +13,18 @@ router = APIRouter(prefix="/api/positions", tags=["positions"])
 
 def _total_contracts_on_leg(rows: list | None, symbol: str, side: str) -> float:
     want = BaseExchangeService._norm_sym(symbol)
-    sl = (side or "").lower()
+    want_side = (side or "").lower()
     total = 0.0
-    for pos in rows or []:
-        if BaseExchangeService._norm_sym(pos.get("symbol") or "") != want:
+    for p in rows or []:
+        contracts = BaseExchangeService.position_row_contracts_abs(p)
+        if contracts <= 0:
             continue
-        if (pos.get("side") or "").lower() != sl:
+        if BaseExchangeService._norm_sym(str(p.get("symbol") or "")) != want:
             continue
-        total += float(pos.get("contracts", 0) or 0)
+        p_side = BaseExchangeService.position_row_side_lower(p)
+        if p_side != want_side:
+            continue
+        total += contracts
     return total
 
 

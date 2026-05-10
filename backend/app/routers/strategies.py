@@ -105,14 +105,10 @@ async def _flatten_strategy_orders_and_positions(
         for rp in raw_pos or []:
             if BaseExchangeService._norm_sym(str(rp.get("symbol") or "")) != want:
                 continue
-            p_side = (rp.get("side") or "").lower()
-            if not p_side:
-                info = rp.get("info") or {}
-                if isinstance(info, dict):
-                    p_side = (info.get("posSide") or "").lower()
+            p_side = BaseExchangeService.position_row_side_lower(rp)
             if p_side != d:
                 continue
-            exchange_qty += abs(float(rp.get("contracts", 0) or 0))
+            exchange_qty += BaseExchangeService.position_row_contracts_abs(rp)
     except Exception as e:
         logging.warning("_flatten_strategy fetch_positions strategy=%d: %s", strategy_id, e)
 
@@ -400,29 +396,32 @@ async def get_exchange_positions(strategy_id: int, db: AsyncSession = Depends(ge
 
     result = []
     for p in positions:
-        contracts = float(p.get("contracts", 0) or 0)
-        if contracts > 0:
-            symbol = _panic_symbol_key(p.get("symbol") or "")
-            side = (p.get("side") or "").lower()
-            entry_price = float(p.get("entryPrice", 0) or 0)
-            mark_price = float(p.get("markPrice", 0) or 0)
-            notional = float(p.get("notional", 0) or 0)
-            pnl = float(p.get("unrealizedPnl", 0) or 0)
-            pnl_pct = 0.0
-            if entry_price > 0:
-                if side == "short":
-                    pnl_pct = (entry_price - mark_price) / entry_price * 100
-                else:
-                    pnl_pct = (mark_price - entry_price) / entry_price * 100
-            result.append({
-                "symbol": symbol,
-                "side": side,
-                "usdt": round(notional, 0),
-                "entry_price": round(entry_price, 4),
-                "mark_price": round(mark_price, 4),
-                "unrealized_pnl": round(pnl, 2),
-                "pnl_pct": round(pnl_pct, 2),
-            })
+        contracts = BaseExchangeService.position_row_contracts_abs(p)
+        if contracts <= 0:
+            continue
+        symbol = _panic_symbol_key(p.get("symbol") or "")
+        side = BaseExchangeService.position_row_side_lower(p)
+        if side not in ("long", "short"):
+            continue
+        entry_price = float(p.get("entryPrice", 0) or 0)
+        mark_price = float(p.get("markPrice", 0) or 0)
+        notional = float(p.get("notional", 0) or 0)
+        pnl = float(p.get("unrealizedPnl", 0) or 0)
+        pnl_pct = 0.0
+        if entry_price > 0:
+            if side == "short":
+                pnl_pct = (entry_price - mark_price) / entry_price * 100
+            else:
+                pnl_pct = (mark_price - entry_price) / entry_price * 100
+        result.append({
+            "symbol": symbol,
+            "side": side,
+            "usdt": round(notional, 0),
+            "entry_price": round(entry_price, 4),
+            "mark_price": round(mark_price, 4),
+            "unrealized_pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+        })
     return result
 
 
