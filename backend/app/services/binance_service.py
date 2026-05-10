@@ -214,10 +214,10 @@ class BinanceService(BaseExchangeService):
 
         combos = []
         if self.hedge_mode:
-            combos.append({"positionSide": position_side, "closePosition": True})
-            combos.append({"closePosition": True})
+            combos.append({"positionSide": position_side, "reduceOnly": True})
+            combos.append({"reduceOnly": True})
         else:
-            combos.append({"closePosition": True})
+            combos.append({"reduceOnly": True})
 
         last_exc = None
         for idx, extra in enumerate(combos):
@@ -226,6 +226,7 @@ class BinanceService(BaseExchangeService):
                     "symbol": base,
                     "side": side.upper(),
                     "type": "STOP_MARKET",
+                    "quantity": str(amount),
                     "stopPrice": str(stop_price),
                     "workingType": "MARK_PRICE",
                     **extra,
