@@ -84,13 +84,13 @@ async def lifespan(app: FastAPI):
     db_on = _ui_auth_startup.database_password_configured()
     if _ui_auth_startup.auth_enabled():
         logger.info(
-            "Web UI 登录门禁: 已启用（进程环境变量 WEB_UI_PASSWORD=%s，数据库 web_ui_password=%s）",
+            "Web UI 登录门禁: 已启用（进程或 .env 的 WEB_UI_PASSWORD=%s，数据库 web_ui_password=%s）",
             "有" if env_on else "无",
             "有" if db_on else "无",
         )
     else:
         logger.info(
-            "Web UI 登录门禁: 未启用 — 请设置环境变量 WEB_UI_PASSWORD，或在「系统设置」保存 Web 控制台密码（写入数据库），并重启或刷新页面"
+            "Web UI 登录门禁: 未启用 — 请设置进程环境变量或 backend/.env 中的 WEB_UI_PASSWORD，或在「系统设置」保存 Web 控制台密码（写入数据库），并重启或刷新页面"
         )
     yield
     logger.info("Shutting down...")
@@ -407,7 +407,7 @@ async def get_web_ui_password_status(db: AsyncSession = Depends(get_db)):
     row = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
     cfg = row.scalar_one_or_none()
     db_has = bool(cfg and cfg.value.strip())
-    env_has = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    env_has = ua.env_or_envfile_password_configured()
     return WebUiPasswordStatus(
         auth_required_effective=ua.auth_enabled(),
         environment_has_password=env_has,
@@ -441,7 +441,7 @@ async def put_web_ui_password(body: WebUiPasswordUpdate, db: AsyncSession = Depe
     row2 = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
     cfg = row2.scalar_one_or_none()
     db_has = bool(cfg and cfg.value.strip())
-    env_has = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    env_has = ua.env_or_envfile_password_configured()
     return WebUiPasswordStatus(
         auth_required_effective=ua.auth_enabled(),
         environment_has_password=env_has,
