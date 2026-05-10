@@ -69,6 +69,13 @@ async def lifespan(app: FastAPI):
     await strategy_log_service.start_persistence()
 
     logger.info("Step 5/5: Backend ready")
+    from .services import ui_auth as _ui_auth_startup
+    if _ui_auth_startup.auth_enabled():
+        logger.info("Web UI 登录门禁: 已启用（进程环境变量 WEB_UI_PASSWORD 非空）")
+    else:
+        logger.info(
+            "Web UI 登录门禁: 未启用 — 需在运行 uvicorn 的环境里设置 WEB_UI_PASSWORD=<密码> 并重启后端，浏览器才会出现登录页"
+        )
     yield
     logger.info("Shutting down...")
     strategy_scheduler.stop()
