@@ -116,20 +116,18 @@ class StrategyScheduler:
                 orders = await exchange.ws_exchange.watch_orders(symbol)
                 for raw in (orders if isinstance(orders, list) else [orders]):
                     oid = str(raw.get("id", "") or "")
-                    status = (raw.get("status") or "").lower()
-                    if status not in ("closed", "filled", "canceled", "cancelled"):
+                    ws_status = (raw.get("status") or "").lower()
+                    if ws_status not in ("closed", "filled", "canceled", "cancelled"):
                         continue
                     co = order_tracker.get(oid)
                     if not co or co.strategy_id != strategy_id:
                         continue
-                    if co.status == OrderState.FILLED:
-                        continue
-                    co.status = OrderState.FILLED if status in ("closed", "filled") else OrderState.CANCELED
-                    co.filled = float(raw.get("filled", 0) or 0)
+                    # 只更新filled/price,不改status(保留PENDING让check_order REST确认后才改)
+                    co.filled = float(raw.get("filled", 0) or 0) or co.filled
                     avg = float(raw.get("average", 0) or 0)
                     if avg > 0:
                         co.price = avg
-                    logger.info("Order %s %s via WS for strategy %d", oid, co.status.value, strategy_id)
+                    logger.info("WS order update: %s status=%s filled=%.4f for strategy %d", oid, ws_status, co.filled, strategy_id)
                     # 立即触发策略执行
                     asyncio.create_task(self._execute_strategy(strategy_id))
             except asyncio.CancelledError:
