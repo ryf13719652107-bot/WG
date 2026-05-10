@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import init_db, get_db, async_session
@@ -60,6 +61,14 @@ async def lifespan(app: FastAPI):
     logger.info("Smart Hedge Martin starting...")
     logger.info("Step 1/5: init_db...")
     await init_db()
+    from .services import ui_auth as _ui_hydrate
+
+    async with async_session() as session:
+        cfg_row = await session.execute(
+            select(BotConfig).where(BotConfig.key == _ui_hydrate.BOT_CFG_WEB_UI_PASSWORD_KEY)
+        )
+        cfg = cfg_row.scalar_one_or_none()
+        _ui_hydrate.set_db_password_overlay(cfg.value if cfg else None)
     logger.info("Step 2/5: scheduler.start...")
     strategy_scheduler.start()
     logger.info("Step 3/5: resume_running_strategies...")
@@ -70,11 +79,18 @@ async def lifespan(app: FastAPI):
 
     logger.info("Step 5/5: Backend ready")
     from .services import ui_auth as _ui_auth_startup
+
+    env_on = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    db_on = _ui_auth_startup.database_password_configured()
     if _ui_auth_startup.auth_enabled():
-        logger.info("Web UI 登录门禁: 已启用（进程环境变量 WEB_UI_PASSWORD 非空）")
+        logger.info(
+            "Web UI 登录门禁: 已启用（进程环境变量 WEB_UI_PASSWORD=%s，数据库 web_ui_password=%s）",
+            "有" if env_on else "无",
+            "有" if db_on else "无",
+        )
     else:
         logger.info(
-            "Web UI 登录门禁: 未启用 — 需在运行 uvicorn 的环境里设置 WEB_UI_PASSWORD=<密码> 并重启后端，浏览器才会出现登录页"
+            "Web UI 登录门禁: 未启用 — 请设置环境变量 WEB_UI_PASSWORD，或在「系统设置」保存 Web 控制台密码（写入数据库），并重启或刷新页面"
         )
     yield
     logger.info("Shutting down...")
@@ -370,6 +386,66 @@ async def put_feishu_notify(body: FeishuNotifyUpdate, db: AsyncSession = Depends
         keyword_prefix=eff_prefix,
         has_database_webhook_override=has_wh,
         has_database_prefix_override=has_pr,
+    )
+
+
+class WebUiPasswordStatus(BaseModel):
+    """供系统设置页判断门禁来源（不返回明文）。"""
+    auth_required_effective: bool = Field(description="与 /api/auth/status 的 auth_required 一致")
+    environment_has_password: bool
+    database_has_password: bool
+
+
+class WebUiPasswordUpdate(BaseModel):
+    password: str = Field(default="", description="新密码；留空仅清除数据库中的 web_ui_password")
+
+
+@app.get("/api/bot/web-ui-password", response_model=WebUiPasswordStatus)
+async def get_web_ui_password_status(db: AsyncSession = Depends(get_db)):
+    from .services import ui_auth as ua
+
+    row = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
+    cfg = row.scalar_one_or_none()
+    db_has = bool(cfg and cfg.value.strip())
+    env_has = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    return WebUiPasswordStatus(
+        auth_required_effective=ua.auth_enabled(),
+        environment_has_password=env_has,
+        database_has_password=db_has,
+    )
+
+
+@app.put("/api/bot/web-ui-password", response_model=WebUiPasswordStatus)
+async def put_web_ui_password(body: WebUiPasswordUpdate, db: AsyncSession = Depends(get_db)):
+    from .services import ui_auth as ua
+
+    raw = body.password.strip() if body.password else ""
+
+    if not raw:
+        del_row = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
+        existing = del_row.scalar_one_or_none()
+        if existing:
+            await db.delete(existing)
+        ua.set_db_password_overlay(None)
+    else:
+        r = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
+        row = r.scalar_one_or_none()
+        if row:
+            row.value = raw
+        else:
+            db.add(BotConfig(key=ua.BOT_CFG_WEB_UI_PASSWORD_KEY, value=raw))
+        ua.set_db_password_overlay(raw)
+
+    await db.commit()
+
+    row2 = await db.execute(select(BotConfig).where(BotConfig.key == ua.BOT_CFG_WEB_UI_PASSWORD_KEY))
+    cfg = row2.scalar_one_or_none()
+    db_has = bool(cfg and cfg.value.strip())
+    env_has = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    return WebUiPasswordStatus(
+        auth_required_effective=ua.auth_enabled(),
+        environment_has_password=env_has,
+        database_has_password=db_has,
     )
 
 

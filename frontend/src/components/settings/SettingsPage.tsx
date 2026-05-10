@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import type { Account, FeishuNotifySettings } from '../../types';
-import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare } from 'lucide-react';
+import type { Account, FeishuNotifySettings, WebUiPasswordStatus } from '../../types';
+import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock } from 'lucide-react';
 
 const FEISHU_DEFAULT: FeishuNotifySettings = {
   webhook_masked: '',
@@ -27,6 +27,12 @@ export default function SettingsPage() {
   const [clearWebhookDb, setClearWebhookDb] = useState(false);
   const [feishuSaveError, setFeishuSaveError] = useState('');
   const [feishuSaving, setFeishuSaving] = useState(false);
+
+  const [webUiPw, setWebUiPw] = useState<WebUiPasswordStatus | null>(null);
+  const [loadingWebUi, setLoadingWebUi] = useState(false);
+  const [webUiDraft, setWebUiDraft] = useState('');
+  const [webUiSaveErr, setWebUiSaveErr] = useState('');
+  const [webUiSaving, setWebUiSaving] = useState(false);
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
@@ -62,8 +68,20 @@ export default function SettingsPage() {
     setLoadingFeishu(false);
   };
 
+  const loadWebUi = async () => {
+    setLoadingWebUi(true);
+    try {
+      const s = await api.getWebUiPasswordStatus();
+      setWebUiPw(s);
+      setWebUiSaveErr('');
+    } catch {
+      setWebUiPw(null);
+    }
+    setLoadingWebUi(false);
+  };
+
   const load = async () => {
-    await Promise.all([loadAccounts(), loadFeishu()]);
+    await Promise.all([loadAccounts(), loadFeishu(), loadWebUi()]);
   };
 
   useEffect(() => {
@@ -119,9 +137,79 @@ export default function SettingsPage() {
     setFeishuSaving(false);
   };
 
+  const handleSaveWebUiPassword = async () => {
+    setWebUiSaving(true);
+    setWebUiSaveErr('');
+    try {
+      const prev = webUiPw?.auth_required_effective ?? false;
+      const next = await api.updateWebUiPassword(webUiDraft);
+      setWebUiPw(next);
+      setWebUiDraft('');
+      const becameEnabled = next.auth_required_effective && !prev;
+      const becameDisabled = !next.auth_required_effective && prev;
+      if (becameEnabled || becameDisabled) {
+        alert(
+          becameEnabled
+            ? '已开启登录门禁。若当前未登录，将刷新页面后要求输入密码。'
+            : '已关闭登录门禁（需环境变量与数据库均未设置密码）。刷新页面后直接进控制台。',
+        );
+        window.location.reload();
+      }
+    } catch (e: unknown) {
+      setWebUiSaveErr(e instanceof Error ? e.message : String(e));
+    }
+    setWebUiSaving(false);
+  };
+
   return (
     <div className="space-y-6 max-w-2xl">
       <h2 className="text-xl font-bold">系统设置</h2>
+
+      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
+          <Lock size={16} className="text-amber-400" />
+          Web 控制台登录密码
+        </h3>
+        {loadingWebUi ? (
+          <p className="text-gray-500 text-sm">加载中…</p>
+        ) : (
+          <div className="space-y-3 text-sm text-gray-400">
+            {webUiSaveErr && (
+              <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 rounded px-2 py-1.5">
+                <AlertCircle size={14} /> {webUiSaveErr}
+              </div>
+            )}
+            <p className="text-xs leading-relaxed">
+              当前门禁状态：<span className="text-gray-200">{webUiPw?.auth_required_effective ? '已启用（需登录）' : '未启用'}</span>
+              {' · '}
+              环境变量：<span className="text-gray-300">{webUiPw?.environment_has_password ? '已设置 WEB_UI_PASSWORD' : '未设置'}</span>
+              {' · '}
+              数据库：<span className="text-gray-300">{webUiPw?.database_has_password ? '已保存密码' : '无'}</span>
+            </p>
+            <p className="text-xs text-gray-500">
+              若 Docker / systemd 不方便配环境变量，可在此写入密码（存入服务器数据库）。
+              <strong className="text-gray-600">优先级</strong>：进程环境变量 <code className="text-gray-500">WEB_UI_PASSWORD</code> 高于此处保存的值。
+              环境变量仍有值时「留空保存」只会清数据库条目，门禁可能仍为启用。
+            </p>
+            <input
+              type="password"
+              autoComplete="new-password"
+              placeholder="输入新登录密码…"
+              value={webUiDraft}
+              onChange={(e) => setWebUiDraft(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              disabled={webUiSaving}
+              onClick={() => void handleSaveWebUiPassword()}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded text-sm mr-2"
+            >
+              {webUiSaving ? '保存中…' : '保存密码'}
+            </button>
+          </div>
+        )}
+      </section>
 
       <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">

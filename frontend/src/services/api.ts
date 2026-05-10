@@ -1,4 +1,4 @@
-import type { Account, Position, Trade, DashboardData, FeishuNotifySettings } from '../types';
+import type { Account, Position, Trade, DashboardData, FeishuNotifySettings, WebUiPasswordStatus } from '../types';
 import type { Strategy, StrategyFormData } from '../types/strategy';
 
 const BASE = '/api';
@@ -134,4 +134,12 @@ export const api = {
     keyword_prefix_use_env_default?: boolean;
   }): Promise<FeishuNotifySettings> =>
     request('/bot/feishu-notify', { method: 'PUT', body: JSON.stringify(data) }),
+
+  getWebUiPasswordStatus: (): Promise<WebUiPasswordStatus> => request('/bot/web-ui-password'),
+
+  updateWebUiPassword: (password: string): Promise<WebUiPasswordStatus> =>
+    request('/bot/web-ui-password', {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    }),
 };

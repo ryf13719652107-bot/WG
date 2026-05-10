@@ -2,12 +2,14 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
-# 固定读 backend/.env，避免 uvicorn 工作目录不在 backend 时读不到 WEB_UI_PASSWORD
+# 固定读 backend/.env；先注入 os.environ，再实例化 Settings（与 Docker/Systemd 环境变量仍可配合）
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(_BACKEND_DIR / ".env", encoding="utf-8", override=False)
 
 
 def now_beijing() -> datetime:

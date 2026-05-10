@@ -1,3 +1,9 @@
+export interface WebUiPasswordStatus {
+  auth_required_effective: boolean;
+  environment_has_password: boolean;
+  database_has_password: boolean;
+}
+
 export interface FeishuNotifySettings {
   webhook_masked: string;
   webhook_source: 'database' | 'environment' | 'none';
