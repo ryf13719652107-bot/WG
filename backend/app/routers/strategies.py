@@ -68,6 +68,21 @@ async def _flatten_strategy_orders_and_positions(
     if cancel_tasks:
         await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
+    # OKX：普通限价与触发/计划单分域，仅靠 tracker + 单次 fetch_open_orders 撤不干净
+    if getattr(exchange, "exchange_id", None) == "okx" and hasattr(
+        exchange, "cancel_all_pending_orders_for_symbol"
+    ):
+        try:
+            n_bulk = await exchange.cancel_all_pending_orders_for_symbol(symbol)
+            if n_bulk:
+                logging.info(
+                    "_flatten_strategy: OKX cancelled %d pending order ops strategy=%d",
+                    n_bulk,
+                    strategy_id,
+                )
+        except Exception as e:
+            logging.warning("_flatten_strategy: OKX cancel_all_pending_orders strategy=%d: %s", strategy_id, e)
+
     try:
         oo_list = await exchange.fetch_open_orders(symbol)
         oo_cancel = []

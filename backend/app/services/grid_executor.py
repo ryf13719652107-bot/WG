@@ -154,8 +154,8 @@ class GridExecutor:
             )
             strategy_log_service.success(
                 strategy.id,
-                f"{log_label}: basis={basis} avg={avg_raw:.6f} step_qty={qty_sl:.8f} "
-                f"止损价={sl_price:.6f} (阈值约{loss_u:.2f}U)",
+                f"{log_label}操作成功: basis={basis} avg={avg_raw:.6f} step_qty={qty_sl:.8f} "
+                f"止损价={sl_price:.6f} (阈值约{loss_u:.2f}U) 订单ID={sl_order_id or '-'}",
             )
             self._schedule_feishu(
                 strategy,
@@ -363,7 +363,8 @@ class GridExecutor:
                 )
                 strategy_log_service.success(
                     strategy.id,
-                    f"挂单止盈: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%)",
+                    f"挂单止盈操作成功: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%) "
+                    f"订单ID={tp_order.get('id', '')}",
                 )
                 self._schedule_feishu(
                     strategy,
@@ -518,7 +519,7 @@ class GridExecutor:
 
         strategy_log_service.success(
             strategy.id,
-            f"止盈触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
+            f"止盈触发: {symbol} 当前价={current_price:.4f} 止盈单已成交，开始平仓并记账",
         )
         self._schedule_feishu(
             strategy,
@@ -537,7 +538,7 @@ class GridExecutor:
 
         # Reopen initial if configured and strategy still running; otherwise stop
         if strategy.reopen_after_close and strategy.status == "running":
-            strategy_log_service.success(strategy.id, f"止盈成功,自动重开: {symbol}")
+            strategy_log_service.success(strategy.id, f"止盈后续操作成功: {symbol} 已按配置自动重开首单")
             self._schedule_feishu(
                 strategy,
                 title="止盈完成 · 自动重开",
@@ -545,7 +546,7 @@ class GridExecutor:
             )
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
-            strategy_log_service.success(strategy.id, f"止盈成功,策略停止: {symbol}")
+            strategy_log_service.success(strategy.id, f"止盈后续操作成功: {symbol} 策略已停止 (reopen_after_close=否)")
             strategy.status = "stopped"
             await session.commit()
             self._schedule_feishu(
@@ -607,7 +608,8 @@ class GridExecutor:
 
             strategy_log_service.success(
                 strategy.id,
-                f"加仓成交: Lv{next_level} 数量={filled_qty:.4f} 价格={fill_price:.4f}",
+                f"加仓成交记录成功: Lv{next_level} 数量={filled_qty:.4f} 价格={fill_price:.4f} "
+                f"订单ID={o.order_id}（已写入本地持仓）",
             )
             self._schedule_feishu(
                 strategy,
@@ -644,7 +646,8 @@ class GridExecutor:
                     )
                     strategy_log_service.success(
                         strategy.id,
-                        f"重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
+                        f"重新挂单止盈操作成功: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f} "
+                        f"订单ID={tp_order_id}",
                     )
                     self._schedule_feishu(
                         strategy,
@@ -724,7 +727,7 @@ class GridExecutor:
 
         strategy_log_service.success(
             strategy.id,
-            f"止损触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
+            f"止损触发: {symbol} 当前价={current_price:.4f} 止损单已成交，开始平仓并记账",
         )
         self._schedule_feishu(
             strategy,
@@ -740,7 +743,7 @@ class GridExecutor:
         await session.refresh(strategy)
 
         if strategy.reopen_after_close and strategy.status == "running":
-            strategy_log_service.success(strategy.id, f"止损成功,自动重开: {symbol}")
+            strategy_log_service.success(strategy.id, f"止损后续操作成功: {symbol} 已按配置自动重开首单")
             self._schedule_feishu(
                 strategy,
                 title="止损完成 · 自动重开",
@@ -748,7 +751,7 @@ class GridExecutor:
             )
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
-            strategy_log_service.success(strategy.id, f"止损成功,策略停止: {symbol}")
+            strategy_log_service.success(strategy.id, f"止损后续操作成功: {symbol} 策略已停止 (reopen_after_close=否)")
             strategy.status = "stopped"
             await session.commit()
             self._schedule_feishu(
@@ -913,5 +916,19 @@ class GridExecutor:
             pos.closed_at = now
 
         await session.commit()
+        n_pos = len(positions)
+        if n_pos > 0:
+            reason_label = {
+                "take_profit": "止盈",
+                "stop_loss": "止损",
+                "panic_loss": "恐慌止损",
+                "margin_stop": "保证金止损",
+                "manual": "手动/其他",
+            }.get(reason, reason)
+            strategy_log_service.success(
+                strategy.id,
+                f"{reason_label}平仓记录成功: {symbol} 已写入 {n_pos} 笔交易历史 (close_reason={reason})，"
+                f"参考平仓价≈{current_price:.6f}",
+            )
         order_tracker.clear_strategy(strategy.id)
         logger.info("Closed all %s positions for strategy=%d reason=%s exchange_ok=%s", symbol, strategy.id, reason, close_success)

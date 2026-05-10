@@ -274,6 +274,50 @@ class OkxService(BaseExchangeService):
             reduce_only, position_side, "stop_loss", extra,
         )
 
+    async def cancel_all_pending_orders_for_symbol(self, symbol: str) -> int:
+        """撤销该合约下全部挂单：ccxt 一键撤单 + 扫尾（含 OKX 触发/计划单，默认 fetch_open_orders 拿不到）。"""
+        formatted = self._format_symbol(symbol)
+        n = 0
+        try:
+            r = await retry_with_backoff(
+                "okx.cancel_all_orders",
+                lambda: self.exchange.cancel_all_orders(formatted),
+            )
+            if isinstance(r, list):
+                n += len(r)
+            elif r is not None:
+                n += 1
+        except Exception as e:
+            logger.warning("OKX cancel_all_orders(%s): %s", symbol, e)
+
+        for use_stop in (False, True):
+            p: dict = {"stop": True} if use_stop else {}
+            try:
+                rows = await retry_with_backoff(
+                    f"okx.fetch_open_orders(sweep stop={use_stop})",
+                    lambda par=dict(p): self.exchange.fetch_open_orders(formatted, params=par),
+                )
+            except Exception as e:
+                logger.debug("OKX fetch_open_orders sweep stop=%s: %s", use_stop, e)
+                continue
+            for row in rows or []:
+                oid = str(row.get("id") or row.get("orderId") or row.get("algoId") or "")
+                if not oid:
+                    continue
+                try:
+                    cparams = {"stop": True} if use_stop else {}
+                    await retry_with_backoff(
+                        "okx.cancel_order(sweep)",
+                        lambda i=oid, cp=dict(cparams): self.exchange.cancel_order(
+                            i, formatted, params=cp or None,
+                        ),
+                    )
+                    n += 1
+                except Exception as e:
+                    logger.debug("OKX cancel_order sweep %s: %s", oid, e)
+
+        return n
+
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
         return await retry_with_backoff(
             "okx.cancel_order",
