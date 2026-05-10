@@ -1,4 +1,5 @@
 """Binance USDM Futures exchange service — refactored to inherit BaseExchangeService."""
+import asyncio
 import time
 import logging
 from typing import Optional
@@ -211,14 +212,20 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """STOP_MARKET on USD-M is a conditional algo order (POST /fapi/v1/algoOrder).
+        """USD-M STOP_MARKET must use Algo Order API (POST /fapi/v1/algoOrder).
 
-        Use ccxt create_order so the correct path and body fields (`triggerPrice`, etc.)
-        match current Binance + ccxt versions. Passing path `fapi/v1/algoOrder` into
-        `request()` would produce `/fapi/v1/fapi/v1/algoOrder` and Binance returns -5000.
+        Do not use ``fapiPrivatePostOrder`` / unified ``create_order`` alone: some ccxt
+        builds still hit ``/fapi/v1/order`` and Binance returns **-4120** (use Algo API).
+
+        Call ``request(algoOrder, ...)`` with Binance field names: ``triggerPrice``,
+        ``algoType=CONDITIONAL``, etc.
         """
         formatted = self._format_symbol(symbol)
-        side_lc = side.lower()
+        sym_rest = formatted.replace("/", "").replace(":USDT", "")
+        await self.exchange.load_markets()
+        qty_s = self.exchange.amount_to_precision(formatted, amount)
+        trig_s = self.exchange.price_to_precision(formatted, stop_price)
+
         combos: list[dict] = []
         if self.hedge_mode:
             combos.append({"positionSide": position_side})
@@ -226,30 +233,35 @@ class BinanceService(BaseExchangeService):
         else:
             p0: dict = {}
             if reduce_only:
-                p0["reduceOnly"] = True
+                p0["reduceOnly"] = "true"
             combos.append(p0)
             combos.append({})
 
         last_exc: Exception | None = None
         for idx, extra in enumerate(combos):
             try:
-                bundle = {
-                    "triggerPrice": stop_price,
+                payload: dict = {
+                    "algoType": "CONDITIONAL",
+                    "symbol": sym_rest,
+                    "side": side.upper(),
+                    "type": "STOP_MARKET",
+                    "quantity": qty_s,
+                    "triggerPrice": trig_s,
                     "workingType": "MARK_PRICE",
                     **extra,
                 }
-                tag = f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
+                tag = f"binance.create_stop_loss_order(algo_combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
                 return await retry_with_backoff(
                     tag,
-                    lambda b=bundle: self.exchange.create_order(
-                        formatted, "stop_market", side_lc, amount, None, b,
+                    lambda pl=payload: self.exchange.request(
+                        _FAPI_ALGO_ORDER_PATH, "fapiPrivate", "POST", pl,
                     ),
                 )
             except Exception as e:
                 last_exc = e
                 err_str = str(e)
                 if "-1106" in err_str or "-4061" in err_str or "-4120" in err_str:
-                    logger.debug("Stop loss create_order combo%d failed: %s, trying next", idx, e)
+                    logger.debug("Stop loss algo combo%d failed: %s, trying next", idx, e)
                     continue
                 raise
         raise last_exc
@@ -323,6 +335,37 @@ class BinanceService(BaseExchangeService):
                 _FAPI_ALGO_ORDER_PATH, "fapiPrivate", "DELETE", params
             ),
         )
+
+    async def cancel_all_open_algo_orders(self, symbol: str) -> int:
+        """Cancel every open USD-M conditional (algo) order for this raw symbol."""
+        formatted = self._format_symbol(symbol)
+        sym_rest = formatted.replace("/", "").replace(":USDT", "")
+        raw = await retry_with_backoff(
+            "binance.openAlgoOrders(get)",
+            lambda: self.exchange.request(
+                "openAlgoOrders",
+                "fapiPrivate",
+                "GET",
+                {"symbol": sym_rest},
+            ),
+        )
+        rows = []
+        if isinstance(raw, list):
+            rows = raw
+        elif isinstance(raw, dict):
+            inner = raw.get("orders") or raw.get("data") or []
+            rows = inner if isinstance(inner, list) else []
+        n = 0
+        tasks = []
+        for row in rows:
+            aid = row.get("algoId")
+            if aid is None:
+                continue
+            tasks.append(self.cancel_algo_order(str(aid), symbol))
+            n += 1
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return n
 
     async def close_position(self, symbol: str, side: str) -> dict:
         """Close all positions for symbol+side. Handles hedge mode with multiple entries."""
