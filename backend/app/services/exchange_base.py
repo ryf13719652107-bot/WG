@@ -57,8 +57,15 @@ class BaseExchangeService(ABC):
 
     @staticmethod
     def _norm_sym(symbol: str) -> str:
-        """Normalize any symbol format to plain uppercase: BTC/USDT:USDT -> BTCUSDT."""
-        s = (symbol or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper()
+        """Normalize any symbol format to plain uppercase: BTC/USDT:USDT -> BTCUSDT.
+
+        Also folds OKX/展示用的「BASE-QUOTE」写法（如 SUI-USDT）为 BASEQUOTE，避免
+        SUI-USDT 被误当成以 USDT 结尾而切片出 SUI-，进而得到非法 ccxt 符号 SUI-/USDT:USDT。
+        """
+        s = (symbol or "").strip().upper()
+        s = s.replace("/", "").replace(":USDT", "")
+        s = s.replace("-SWAP", "")
+        s = s.replace("-", "")
         return s
 
     # ---- Market Data (Public) ----

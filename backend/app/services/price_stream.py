@@ -9,6 +9,8 @@ import logging
 from collections import defaultdict
 from typing import Optional, Callable, Awaitable
 
+from .exchange_base import BaseExchangeService
+
 logger = logging.getLogger(__name__)
 
 RECONNECT_BASE_DELAY = 1.0
@@ -47,7 +49,7 @@ class PriceStreamManager:
 
     @staticmethod
     def _norm(s: str) -> str:
-        return (s or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper()
+        return BaseExchangeService._norm_sym(s)
 
     def register_callback(self, symbol: str, callback: Callable[[str, float], Awaitable[None]]):
         """Register a callback to be called when price updates for this symbol."""

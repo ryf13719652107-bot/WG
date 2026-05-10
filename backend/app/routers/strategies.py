@@ -10,16 +10,17 @@ from ..models.position import Position
 from ..schemas.strategy import StrategyCreate, StrategyUpdate, StrategyResponse
 from ..services.scheduler import strategy_scheduler
 from ..services.exchange_factory import get_exchange_service, clear_all_cache
+from ..services.exchange_base import BaseExchangeService
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
 
 def _panic_symbol_key(sym: str) -> str:
-    return (sym or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper()
+    return BaseExchangeService._norm_sym(sym)
 
 
 def _norm_sym(s: str) -> str:
-    return (s or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper().strip()
+    return BaseExchangeService._norm_sym(s)
 
 
 async def _flatten_strategy_orders_and_positions(
