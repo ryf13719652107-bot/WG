@@ -846,10 +846,13 @@ class GridExecutor:
         for o in sl_orders:
             if GridExecutor._order_symbol_matches(o.symbol, symbol):
                 try:
-                    await exchange.cancel_algo_order(o.order_id, o.symbol)
-                    logger.debug("Cancelled SL algo order %s", o.order_id)
+                    await exchange.cancel_algo_order(o.order_id, symbol)
+                    logger.info("Cancelled SL order %s for strategy %d", o.order_id, strategy.id)
                 except Exception as e:
-                    logger.debug("Cancel SL algo order %s: %s", o.order_id, e)
+                    logger.warning(
+                        "Cancel SL order %s failed strategy=%d: %s",
+                        o.order_id, strategy.id, e,
+                    )
 
     async def _check_stop_loss_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
         """Check if stop loss orders have filled. If so, close all and reopen."""

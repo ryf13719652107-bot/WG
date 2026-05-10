@@ -386,8 +386,12 @@ class OkxService(BaseExchangeService):
         )
 
     async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
-        """OKX uses same cancel endpoint for all orders."""
-        return await self.cancel_order(algo_id, symbol)
+        """撤销 OKX 条件/计划单（止损等）。须走 cancel-algos，即 ccxt 的 params.stop/trigger。"""
+        formatted = self._format_symbol(symbol)
+        return await retry_with_backoff(
+            "okx.cancel_algo_order",
+            lambda: self.exchange.cancel_order(algo_id, formatted, params={"stop": True}),
+        )
 
     async def close_position(self, symbol: str, side: str) -> dict:
         formatted = self._format_symbol(symbol)
