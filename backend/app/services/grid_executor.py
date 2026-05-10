@@ -632,9 +632,9 @@ class GridExecutor:
                     pass
 
         # Market close all — skip if TP already closed the position on exchange
-        close_success = True  # assume OK for TP/SL that already closed
-        if reason in ("take_profit",):
-            logger.info("Skipping close_position for strategy=%d: position already closed by TP", strategy.id)
+        close_success = True
+        if reason in ("take_profit", "stop_loss"):
+            logger.info("Skipping close_position for strategy=%d: position already closed by %s order", strategy.id, reason)
         else:
             close_success = False
             try:
@@ -645,7 +645,7 @@ class GridExecutor:
                 logger.error("Failed to close position for strategy=%d %s: %s", strategy.id, symbol, e)
                 strategy_log_service.error(strategy.id, f"交易所平仓失败: {e}")
 
-        if not close_success and reason not in ("take_profit",):
+        if not close_success and reason not in ("take_profit", "stop_loss"):
             logger.warning("Exchange close failed for strategy=%d %s — still recording DB close", strategy.id, symbol)
             strategy_log_service.warning(strategy.id, "交易所平仓失败，本地记录已关闭，请手动检查交易所持仓")
 
