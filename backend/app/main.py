@@ -134,8 +134,9 @@ async def get_markets(exchange: str = "binance"):
     from .services.exchange_base import BaseExchangeService
     try:
         ex = await get_public_exchange(exchange)
-        # fetch_markets returns list of Market dicts in ccxt
         raw = await ex.fetch_markets()
+        if isinstance(raw, dict):
+            raw = list(raw.values())
         symbols = []
         seen = set()
         for m in (raw or []):

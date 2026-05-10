@@ -96,8 +96,8 @@ class BaseExchangeService(ABC):
         ...
 
     @abstractmethod
-    async def fetch_markets(self) -> dict:
-        """Fetch all available markets from the exchange."""
+    async def fetch_markets(self) -> list:
+        """Fetch all available markets from the exchange. Returns list of market dicts."""
 
     # ---- Orders (Private) ----
 

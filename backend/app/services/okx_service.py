@@ -122,11 +122,14 @@ class OkxService(BaseExchangeService):
             lambda: self.exchange.fetch_order_book(self._format_symbol(symbol), limit),
         )
 
-    async def fetch_markets(self) -> dict:
-        return await retry_with_backoff(
+    async def fetch_markets(self) -> list:
+        raw = await retry_with_backoff(
             "okx.fetch_markets",
             lambda: self.exchange.load_markets(True),
         )
+        if isinstance(raw, dict):
+            return list(raw.values())
+        return raw or []
 
     # ---- Orders ----
 
