@@ -198,6 +198,20 @@ class BinanceService(BaseExchangeService):
             logger.warning("normalize_order_amount(%s): %s", symbol, e)
             return float(amount)
 
+    async def linear_contract_ct_val(self, symbol: str) -> float:
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
+            if not m.get("contract"):
+                return 1.0
+            cs = float(m.get("contractSize") or 0)
+            if cs > 0:
+                return float(cs)
+        except Exception as e:
+            logger.warning("binance.linear_contract_ct_val(%s): %s", symbol, e)
+        return 1.0
+
     # ---- Orders (Private) ----
 
     async def create_market_order(

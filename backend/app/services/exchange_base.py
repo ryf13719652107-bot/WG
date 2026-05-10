@@ -193,6 +193,13 @@ class BaseExchangeService(ABC):
             return 0.0
         return float(quote_usdt) / float(ref_price)
 
+    async def linear_contract_ct_val(self, symbol: str) -> float:
+        """线性 USDT 永续：未实现盈亏对价格的敏感度里，每张合约的「基础数量」系数（OKX/BN 多为 ctVal/contractSize）。
+
+        近似 USDT 盈亏变化 ≈ (标记价 − 开仓价) × 张数 × 该系数（多仓）。未知时返回 1.0，与仅按张数估算的旧逻辑一致。
+        """
+        return 1.0
+
     async def fetch_open_algo_orders(self, symbol: str) -> list:
         """Open conditional (algo) orders for this symbol. Default empty; Binance USD-M overrides."""
         return []

@@ -114,7 +114,14 @@ def test_stop_loss_price_matches_cumulative_loss_threshold():
     assert pnl_at_sl == pytest.approx(-loss_u, abs=0.05)
 
 
-def test_get_next_grid_add():
+def test_stop_loss_uses_ct_val_for_contract_linear_pnl():
+    """低价币：亏损 U 对应的价格步长应为 loss_u/(张数×ctVal)，不能误用 loss_u/张数。"""
+    s = MockStrategy(cumulative_loss_threshold_u=1.0)
+    eng = GridStrategyEngine(s)
+    avg, qty, loss_u, ct = 0.014693, 3.0, 1.0, 90.0
+    sl = eng.stop_loss_price_for_fixed_usdt_loss(avg, qty, loss_u, "long", ct_val=ct)
+    assert sl > 0
+    assert (avg - sl) * qty * ct == pytest.approx(loss_u, abs=1e-4)
     s = MockStrategy(max_layers=5)
     eng = GridStrategyEngine(s)
     gl = eng.get_next_grid_add(100.0, 0, "long")

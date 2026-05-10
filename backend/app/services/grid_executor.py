@@ -197,8 +197,9 @@ class GridExecutor:
             exchange, symbol, strategy.direction, db_positions
         )
         qty_sl = await exchange.normalize_order_amount(symbol, qty_raw)
+        ct_val = await exchange.linear_contract_ct_val(symbol)
         sl_price = self.engine.stop_loss_price_for_fixed_usdt_loss(
-            avg_raw, qty_sl, loss_u, strategy.direction,
+            avg_raw, qty_sl, loss_u, strategy.direction, ct_val=ct_val,
         )
         sl_side = "sell" if strategy.direction == "long" else "buy"
 

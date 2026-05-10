@@ -208,6 +208,26 @@ class OkxService(BaseExchangeService):
             logger.warning("OKX quote_usdt_to_order_amount(%s): %s", symbol, e)
             return float(quote_usdt) / float(ref_price)
 
+    async def linear_contract_ct_val(self, symbol: str) -> float:
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
+            if not m.get("contract"):
+                return 1.0
+            cs = float(m.get("contractSize") or 0)
+            info = m.get("info") or {}
+            if isinstance(info, dict) and cs <= 0:
+                try:
+                    cs = float(info.get("ctVal") or 0)
+                except (TypeError, ValueError):
+                    cs = 0.0
+            if cs > 0:
+                return float(cs)
+        except Exception as e:
+            logger.warning("OKX linear_contract_ct_val(%s): %s", symbol, e)
+        return 1.0
+
     # ---- Orders ----
 
     def _order_param_combos(self, position_side: str, reduce_only: bool) -> list[dict]:

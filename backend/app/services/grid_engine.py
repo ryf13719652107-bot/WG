@@ -101,15 +101,27 @@ class GridStrategyEngine:
 
     @staticmethod
     def stop_loss_price_for_fixed_usdt_loss(
-        weighted_avg_entry: float, contract_qty: float, loss_u: float, side: str,
+        weighted_avg_entry: float,
+        contract_qty: float,
+        loss_u: float,
+        side: str,
+        *,
+        ct_val: float = 1.0,
     ) -> float:
-        """Linear USDT-M: 近似在触发价全平 contract_qty 张时，浮动亏损约 loss_u（U）。
+        """线性 USDT 永续：在触发价全平 contract_qty 张时，浮动亏损约 loss_u（U）。
 
-        多: P = avg - loss_u/Q ；空: P = avg + loss_u/Q 。与多级持仓加权均价一致。
+        多仓近似 (avg − P)×张数×ctVal = loss_u → P = avg − loss_u/(张数×ctVal)；空仓对称。
+        ct_val 取交易所合约 ctVal/contractSize；为 1 时退化为旧式 (avg − loss_u/张数)。
         """
         if weighted_avg_entry <= 0 or contract_qty <= 0 or loss_u <= 0:
             return 0.0
-        step = loss_u / contract_qty
+        cv = float(ct_val) if ct_val is not None else 1.0
+        if cv <= 0:
+            cv = 1.0
+        denom = contract_qty * cv
+        if denom <= 0:
+            return 0.0
+        step = loss_u / denom
         s = side.lower()
         if s == "long":
             return round(weighted_avg_entry - step, 8)
