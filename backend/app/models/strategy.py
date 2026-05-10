@@ -23,7 +23,7 @@ class Strategy(Base):
     base_qty_value: Mapped[float] = mapped_column(Float, default=6.0)
 
     # Martingale grid params
-    max_layers: Mapped[int] = mapped_column(Integer, default=8)
+    max_layers: Mapped[int] = mapped_column(Integer, default=6)
 
     # Grid-specific params
     tp_pct: Mapped[float] = mapped_column(Float, default=1.0)  # take profit % (default 1%)

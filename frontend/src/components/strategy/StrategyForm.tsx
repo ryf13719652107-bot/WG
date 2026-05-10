@@ -51,7 +51,7 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
     symbol: '',
     base_qty_type: 'margin_pct',
     base_qty_value: 6,
-    max_layers: 8,
+    max_layers: 6,
     tp_pct: 1,
     grid_drop_base_pct: 1,
     grid_interval_multiplier: 1.5,

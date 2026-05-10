@@ -184,19 +184,32 @@ class GridExecutor:
                 pos.tp_limit_order_id, symbol, tp_side, "limit",
                 filled_qty, tp_price, strategy.id, "tp",
             )
+            strategy_log_service.success(
+                strategy.id,
+                f"挂单止盈: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%)",
+            )
         except Exception as e:
             logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
+            strategy_log_service.error(strategy.id, f"挂单止盈失败: {e}")
 
         await session.commit()
 
         # 3. Place all grid add limit orders
         grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
+        placed = 0
+        total = len(grid_levels)
         for gl in grid_levels:
-            await self._place_grid_add(session, strategy, symbol, exchange, pos, gl)
+            result = await self._place_grid_add(session, strategy, symbol, exchange, pos, gl)
+            if result:
+                placed += 1
+        strategy_log_service.success(
+            strategy.id,
+            f"挂单加仓: {placed}/{total} 层已挂单 (共{total}层加仓限价单, max_layers={strategy.max_layers})",
+        )
 
         logger.info(
-            "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f",
-            strategy.direction, symbol, filled_qty, entry_price, tp_price,
+            "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f grid_placed=%d/%d",
+            strategy.direction, symbol, filled_qty, entry_price, tp_price, placed, total,
         )
 
     async def _place_grid_add(self, session, strategy, symbol, exchange, position, grid_level: GridLevel):
@@ -208,6 +221,7 @@ class GridExecutor:
         trigger_price = grid_level.trigger_price
         if trigger_price <= 0:
             logger.error("Grid add trigger_price is 0 for strategy %d level %d", strategy.id, grid_level.level)
+            strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: trigger_price=0")
             return None
 
         qty = 0.0
@@ -219,12 +233,14 @@ class GridExecutor:
                 qty = usdt_amount / trigger_price
             except Exception as e:
                 logger.warning("Failed to calculate margin-based grid add qty: %s", e)
+                strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: 余额查询异常")
                 return None
         else:
             qty = raw_size / trigger_price
 
         if qty <= 0:
             logger.error("Grid add qty is 0 for strategy %d level %d", strategy.id, grid_level.level)
+            strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: 计算数量为0")
             return None
 
         qty = self._round_qty(qty)
@@ -239,6 +255,10 @@ class GridExecutor:
                 order_id, symbol, add_side, "limit",
                 qty, trigger_price, strategy.id, "grid_add",
             )
+            strategy_log_service.success(
+                strategy.id,
+                f"挂单加仓 Lv{grid_level.level}: 数量={qty:.4f} 触发价={trigger_price:.4f} (累计跌幅{grid_level.drop_pct}%)",
+            )
             logger.info(
                 "Grid add placed: %s lv=%d qty=%.4f trigger=%.4f (raw_size=%.4f)",
                 symbol, grid_level.level, qty, trigger_price, raw_size,
@@ -246,6 +266,7 @@ class GridExecutor:
             return order_id
         except Exception as e:
             logger.error("Failed to place grid add order for %s lv=%d: %s", symbol, grid_level.level, e)
+            strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: {e}")
             return None
 
     async def _check_tp_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
@@ -261,6 +282,11 @@ class GridExecutor:
 
         if not filled:
             return False
+
+        strategy_log_service.success(
+            strategy.id,
+            f"止盈触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
+        )
 
         # TP filled → close all positions
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, "take_profit")
@@ -314,7 +340,11 @@ class GridExecutor:
             positions.append(pos)
             any_filled = True
 
-            logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, len(positions) - 1, filled_qty, fill_price)
+            strategy_log_service.success(
+                strategy.id,
+                f"加仓成交: Lv{next_level} 数量={filled_qty:.4f} 价格={fill_price:.4f}",
+            )
+            logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, next_level, filled_qty, fill_price)
 
             # Cancel old TP order
             await self._cancel_tp_orders(session, strategy, symbol, exchange, positions)
@@ -330,7 +360,6 @@ class GridExecutor:
                     reduce_only=True, position_side=position_side,
                 )
                 tp_order_id = str(tp_order.get("id", ""))
-                # Update all positions with new TP order ID
                 for p in positions:
                     p.tp_limit_order_id = tp_order_id
                     p.take_profit_price = tp_price
@@ -338,8 +367,13 @@ class GridExecutor:
                     tp_order_id, symbol, tp_side, "limit",
                     total_qty, tp_price, strategy.id, "tp",
                 )
+                strategy_log_service.success(
+                    strategy.id,
+                    f"重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
+                )
             except Exception as e:
                 logger.error("Failed to place new TP after grid add: %s", e)
+                strategy_log_service.error(strategy.id, f"重新挂单止盈失败: {e}")
 
             await session.commit()
             # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层

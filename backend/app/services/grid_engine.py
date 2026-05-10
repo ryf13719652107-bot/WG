@@ -43,12 +43,12 @@ class GridStrategyEngine:
         """Calculate all grid add trigger prices and quantities from base entry price.
 
         Level 0 is the initial entry (not returned since it's always market-open).
-        Returns levels 1..max_layers-1.
+        Returns levels 1..max_layers (user-set grid add count).
         """
         levels = []
         cumulative_drop = 0.0
 
-        for n in range(1, self.max_layers):
+        for n in range(1, self.max_layers + 1):
             # Interval for level n
             if n == 1:
                 interval = self.drop_base_pct

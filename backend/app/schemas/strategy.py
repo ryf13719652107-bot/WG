@@ -11,7 +11,7 @@ class StrategyCreate(BaseModel):
     base_qty_type: Literal["margin_pct", "usdt"] = "margin_pct"
     base_qty_value: float = Field(default=6.0, gt=0)
     # Grid params
-    max_layers: int = Field(default=8, ge=1, le=50)
+    max_layers: int = Field(default=6, ge=1, le=50)
     tp_pct: float = Field(default=1.0, gt=0, le=50)
     grid_drop_base_pct: float = Field(default=1.0, gt=0, le=100)
     grid_interval_multiplier: float = Field(default=1.5, ge=1.0, le=10.0)
