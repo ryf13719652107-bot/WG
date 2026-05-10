@@ -225,9 +225,10 @@ class BinanceService(BaseExchangeService):
                 params = {
                     "symbol": base,
                     "side": side.upper(),
-                    "type": "STOP_MARKET",
+                    "type": "STOP",
                     "quantity": str(amount),
                     "stopPrice": str(stop_price),
+                    "price": str(stop_price),
                     "workingType": "MARK_PRICE",
                     **extra,
                 }
