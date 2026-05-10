@@ -12,7 +12,6 @@ class StrategyCreate(BaseModel):
     base_qty_value: float = Field(default=6.0, gt=0)
     # Grid params
     max_layers: int = Field(default=8, ge=1, le=50)
-    leverage: int = Field(default=20, ge=1, le=125)
     tp_pct: float = Field(default=1.0, gt=0, le=50)
     grid_drop_base_pct: float = Field(default=1.0, gt=0, le=100)
     grid_interval_multiplier: float = Field(default=1.5, ge=1.0, le=10.0)
@@ -22,10 +21,10 @@ class StrategyCreate(BaseModel):
 
 
 class StrategyUpdate(BaseModel):
+    """可编辑的策略参数,运行中也能修改(自动停启生效)."""
     base_qty_type: Optional[Literal["margin_pct", "usdt"]] = None
     base_qty_value: Optional[float] = Field(default=None, gt=0)
     max_layers: Optional[int] = Field(default=None, ge=1, le=50)
-    leverage: Optional[int] = Field(default=None, ge=1, le=125)
     tp_pct: Optional[float] = Field(default=None, gt=0, le=50)
     grid_drop_base_pct: Optional[float] = Field(default=None, gt=0, le=100)
     grid_interval_multiplier: Optional[float] = Field(default=None, ge=1.0, le=10.0)
@@ -42,7 +41,6 @@ class StrategyResponse(BaseModel):
     base_qty_type: str
     base_qty_value: float
     max_layers: int
-    leverage: int
     tp_pct: float
     grid_drop_base_pct: float
     grid_interval_multiplier: float

@@ -6,7 +6,6 @@ export interface Strategy {
   base_qty_type: 'margin_pct' | 'usdt';
   base_qty_value: number;
   max_layers: number;
-  leverage: number;
   tp_pct: number;
   grid_drop_base_pct: number;
   grid_interval_multiplier: number;
@@ -26,7 +25,6 @@ export interface StrategyFormData {
   base_qty_type: 'margin_pct' | 'usdt';
   base_qty_value: number;
   max_layers: number;
-  leverage: number;
   tp_pct: number;
   grid_drop_base_pct: number;
   grid_interval_multiplier: number;

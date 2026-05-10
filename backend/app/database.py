@@ -82,6 +82,7 @@ async def init_db():
             ("strategies", "coin_pool_top_n"),
             ("strategies", "exclude_tradefi"),
             ("strategies", "name"),
+            ("strategies", "leverage"),
         ]
         from sqlalchemy import inspect as sa_inspect
         for table, column in legacy_drops:

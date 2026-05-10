@@ -24,7 +24,6 @@ class Strategy(Base):
 
     # Martingale grid params
     max_layers: Mapped[int] = mapped_column(Integer, default=8)
-    leverage: Mapped[int] = mapped_column(Integer, default=20)
 
     # Grid-specific params
     tp_pct: Mapped[float] = mapped_column(Float, default=1.0)  # take profit % (default 1%)

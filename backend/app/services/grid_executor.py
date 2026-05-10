@@ -101,37 +101,33 @@ class GridExecutor:
         side_raw = "buy" if strategy.direction == "long" else "sell"
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
 
-        # Calculate position quantity
+        # Calculate position quantity (USDT notional / price, no leverage)
         qty = 0.0
         if strategy.base_qty_type == "margin_pct":
             try:
                 balance = await exchange.fetch_balance()
                 total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
-                margin_usdt = total_usdt * (strategy.base_qty_value / 100.0)
-                lev = self.engine.leverage
+                usdt_amount = total_usdt * (strategy.base_qty_value / 100.0)
                 if current_price > 0:
-                    qty = (margin_usdt * lev) / current_price
+                    qty = usdt_amount / current_price
             except Exception as e:
                 logger.warning("Failed to calculate margin-based qty: %s", e)
+                strategy_log_service.error(strategy.id, f"开仓失败: 获取余额异常 - {e}")
                 return
         else:
             if current_price > 0:
-                qty = (strategy.base_qty_value * self.engine.leverage) / current_price
+                qty = strategy.base_qty_value / current_price
             else:
                 logger.error("Cannot calculate qty: current_price is 0")
+                strategy_log_service.error(strategy.id, "开仓失败: 无法获取当前价格")
                 return
 
         if qty <= 0:
             logger.error("Calculated qty is 0 for strategy %d", strategy.id)
+            strategy_log_service.error(strategy.id, "开仓失败: 计算数量为0")
             return
 
         qty = self._round_qty(qty)
-
-        # 0. Set leverage on exchange before opening
-        try:
-            await exchange.set_leverage(symbol, self.engine.leverage)
-        except Exception as e:
-            logger.warning("Failed to set leverage for %s: %s (continuing)", symbol, e)
 
         # 1. Market open initial position
         try:
@@ -140,10 +136,16 @@ class GridExecutor:
             )
         except Exception as e:
             logger.error("Failed to open initial position for %s %s: %s", strategy.id, symbol, e)
+            strategy_log_service.error(strategy.id, f"开仓失败: {symbol} {strategy.direction} - {e}")
             return
 
         entry_price = float(order.get("average", 0) or order.get("price", 0) or current_price)
         filled_qty = float(order.get("filled", qty) or qty)
+
+        strategy_log_service.success(
+            strategy.id,
+            f"开仓成功: {symbol} {strategy.direction} 数量={filled_qty:.4f} 价格={entry_price:.4f}",
+        )
 
         # Record position in DB
         pos = Position(
@@ -213,13 +215,13 @@ class GridExecutor:
             try:
                 balance = await exchange.fetch_balance()
                 total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
-                margin_usdt = total_usdt * (raw_size / 100.0)
-                qty = (margin_usdt * self.engine.leverage) / trigger_price
+                usdt_amount = total_usdt * (raw_size / 100.0)
+                qty = usdt_amount / trigger_price
             except Exception as e:
                 logger.warning("Failed to calculate margin-based grid add qty: %s", e)
                 return None
         else:
-            qty = (raw_size * self.engine.leverage) / trigger_price
+            qty = raw_size / trigger_price
 
         if qty <= 0:
             logger.error("Grid add qty is 0 for strategy %d level %d", strategy.id, grid_level.level)

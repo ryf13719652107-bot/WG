@@ -5,12 +5,13 @@ import { useDashboardStore } from '../../store/dashboardStore';
 import type { Strategy } from '../../types/strategy';
 import type { Account } from '../../types';
 import StrategyForm from './StrategyForm';
-import { Play, Square, AlertTriangle, Trash2, Plus, Eye } from 'lucide-react';
+import { Play, Square, AlertTriangle, Trash2, Plus, Eye, Edit3 } from 'lucide-react';
 
 export default function StrategyPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
 
   const load = async () => {
@@ -66,6 +67,11 @@ export default function StrategyPage() {
     load();
   };
 
+  const handleEdit = (id: number) => {
+    setEditingId(id);
+    setShowForm(true);
+  };
+
   const handleSubmit = async (data: any) => {
     try {
       await api.createStrategy(data);
@@ -76,12 +82,26 @@ export default function StrategyPage() {
     }
   };
 
+  const handleSubmitEdit = async (data: any) => {
+    if (!editingId) return;
+    try {
+      await api.updateStrategy(editingId, data);
+      setShowForm(false);
+      setEditingId(null);
+      load();
+    } catch (e: any) {
+      alert('更新策略失败: ' + (e.message || '未知错误'));
+    }
+  };
+
+  const editingStrategy = editingId ? strategies.find(s => s.id === editingId) || null : null;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold">策略管理</h2>
         <button
-          onClick={() => setShowForm(true)}
+          onClick={() => { setEditingId(null); setShowForm(true); }}
           className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
         >
           <Plus size={16} />
@@ -89,12 +109,21 @@ export default function StrategyPage() {
         </button>
       </div>
 
-      {showForm && (
+      {showForm && editingId === null && (
         <StrategyForm
           accounts={accounts}
           initialData={null}
           onSubmit={handleSubmit}
           onCancel={() => setShowForm(false)}
+        />
+      )}
+
+      {showForm && editingId !== null && editingStrategy && (
+        <StrategyForm
+          accounts={accounts}
+          initialData={editingStrategy}
+          onSubmit={handleSubmitEdit}
+          onCancel={() => { setShowForm(false); setEditingId(null); }}
         />
       )}
 
@@ -123,6 +152,9 @@ export default function StrategyPage() {
               <Link to={`/strategies/${s.id}`} className="p-1.5 text-blue-400 hover:bg-blue-600/20 rounded" title="查看详情">
                 <Eye size={16} />
               </Link>
+              <button onClick={() => handleEdit(s.id)} className="p-1.5 text-purple-400 hover:bg-purple-600/20 rounded" title="编辑参数">
+                <Edit3 size={16} />
+              </button>
               {s.status === 'stopped' || s.status === 'error' ? (
                 <button onClick={() => handleStart(s.id)} className="p-1.5 text-green-400 hover:bg-green-600/20 rounded" title="启动">
                   <Play size={16} />

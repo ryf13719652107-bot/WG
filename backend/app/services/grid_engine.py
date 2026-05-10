@@ -38,7 +38,6 @@ class GridStrategyEngine:
         self.pos_mult = float(strategy.position_multiplier)
         self.max_layers = int(strategy.max_layers)
         self.loss_threshold = float(strategy.cumulative_loss_threshold_u or 0)
-        self.leverage = float(strategy.leverage or 20)
 
     def calculate_grid_levels(self, base_price: float, side: str) -> list[GridLevel]:
         """Calculate all grid add trigger prices and quantities from base entry price.
