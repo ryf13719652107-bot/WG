@@ -1,3 +1,11 @@
+export interface FeishuNotifySettings {
+  webhook_masked: string;
+  webhook_source: 'database' | 'environment' | 'none';
+  keyword_prefix: string;
+  has_database_webhook_override: boolean;
+  has_database_prefix_override: boolean;
+}
+
 export interface Account {
   id: number;
   name: string;

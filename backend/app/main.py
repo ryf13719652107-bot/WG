@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import init_db, get_db, async_session
@@ -225,6 +225,120 @@ async def toggle_bot(body: ToggleRequest, db: AsyncSession = Depends(get_db)):
         db.add(config)
     await db.commit()
     return {"master_switch": enabled}
+
+
+class FeishuNotifyPublic(BaseModel):
+    webhook_masked: str
+    webhook_source: str = Field(description='"database" | "environment" | "none"')
+    keyword_prefix: str
+    has_database_webhook_override: bool
+    has_database_prefix_override: bool
+
+
+class FeishuNotifyUpdate(BaseModel):
+    webhook_url: str | None = None
+    keyword_prefix: str | None = None
+    keyword_prefix_use_env_default: bool | None = None
+
+
+@app.get("/api/bot/feishu-notify", response_model=FeishuNotifyPublic)
+async def get_feishu_notify(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from .services.feishu_notify import (
+        FEISHU_CFG_PREFIX,
+        FEISHU_CFG_WEBHOOK,
+        mask_webhook_url,
+        resolve_feishu_config,
+    )
+
+    hook_row = await db.execute(select(BotConfig).where(BotConfig.key == FEISHU_CFG_WEBHOOK))
+    hook_cfg = hook_row.scalar_one_or_none()
+    pref_row = await db.execute(select(BotConfig).where(BotConfig.key == FEISHU_CFG_PREFIX))
+    pref_cfg = pref_row.scalar_one_or_none()
+
+    has_wh = bool(hook_cfg and hook_cfg.value.strip())
+    has_pr = pref_cfg is not None
+
+    eff_url, eff_prefix = await resolve_feishu_config(db)
+
+    if has_wh:
+        source = "database"
+    elif (settings.feishu_webhook_url or "").strip():
+        source = "environment"
+    else:
+        source = "none"
+
+    return FeishuNotifyPublic(
+        webhook_masked=mask_webhook_url(eff_url),
+        webhook_source=source,
+        keyword_prefix=eff_prefix,
+        has_database_webhook_override=has_wh,
+        has_database_prefix_override=has_pr,
+    )
+
+
+@app.put("/api/bot/feishu-notify", response_model=FeishuNotifyPublic)
+async def put_feishu_notify(body: FeishuNotifyUpdate, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from .services.feishu_notify import (
+        FEISHU_CFG_PREFIX,
+        FEISHU_CFG_WEBHOOK,
+        mask_webhook_url,
+        resolve_feishu_config,
+    )
+
+    async def upsert_bot(k: str, v: str) -> None:
+        r = await db.execute(select(BotConfig).where(BotConfig.key == k))
+        row = r.scalar_one_or_none()
+        if row:
+            row.value = v
+        else:
+            db.add(BotConfig(key=k, value=v))
+
+    async def delete_bot(k: str) -> None:
+        r = await db.execute(select(BotConfig).where(BotConfig.key == k))
+        row = r.scalar_one_or_none()
+        if row:
+            await db.delete(row)
+
+    if body.webhook_url is not None:
+        w = body.webhook_url.strip()
+        if w:
+            await upsert_bot(FEISHU_CFG_WEBHOOK, w)
+        else:
+            await delete_bot(FEISHU_CFG_WEBHOOK)
+
+    if body.keyword_prefix_use_env_default:
+        await delete_bot(FEISHU_CFG_PREFIX)
+    elif body.keyword_prefix is not None:
+        await upsert_bot(FEISHU_CFG_PREFIX, body.keyword_prefix)
+
+    await db.commit()
+
+    hook_row = await db.execute(select(BotConfig).where(BotConfig.key == FEISHU_CFG_WEBHOOK))
+    hook_cfg = hook_row.scalar_one_or_none()
+    pref_row = await db.execute(select(BotConfig).where(BotConfig.key == FEISHU_CFG_PREFIX))
+    pref_cfg = pref_row.scalar_one_or_none()
+
+    has_wh = bool(hook_cfg and hook_cfg.value.strip())
+    has_pr = pref_cfg is not None
+
+    eff_url, eff_prefix = await resolve_feishu_config(db)
+
+    if has_wh:
+        source = "database"
+    elif (settings.feishu_webhook_url or "").strip():
+        source = "environment"
+    else:
+        source = "none"
+
+    return FeishuNotifyPublic(
+        webhook_masked=mask_webhook_url(eff_url),
+        webhook_source=source,
+        keyword_prefix=eff_prefix,
+        has_database_webhook_override=has_wh,
+        has_database_prefix_override=has_pr,
+    )
 
 
 # ---- SPA fallback: must be LAST after all API routes ----

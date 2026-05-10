@@ -1,4 +1,4 @@
-import type { Account, Position, Trade, DashboardData } from '../types';
+import type { Account, Position, Trade, DashboardData, FeishuNotifySettings } from '../types';
 import type { Strategy, StrategyFormData } from '../types/strategy';
 
 const BASE = '/api';
@@ -107,4 +107,13 @@ export const api = {
   // Bot toggle
   toggleBot: (enabled: boolean): Promise<{ master_switch: boolean }> =>
     request('/bot/toggle', { method: 'POST', body: JSON.stringify({ enabled }) }),
+
+  getFeishuNotify: (): Promise<FeishuNotifySettings> => request('/bot/feishu-notify'),
+
+  updateFeishuNotify: (data: {
+    webhook_url?: string;
+    keyword_prefix?: string;
+    keyword_prefix_use_env_default?: boolean;
+  }): Promise<FeishuNotifySettings> =>
+    request('/bot/feishu-notify', { method: 'PUT', body: JSON.stringify(data) }),
 };

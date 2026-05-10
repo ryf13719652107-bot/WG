@@ -150,6 +150,17 @@ class GridExecutor:
                 f"{log_label}: basis={basis} avg={avg_raw:.6f} step_qty={qty_sl:.8f} "
                 f"止损价={sl_price:.6f} (阈值约{loss_u:.2f}U)",
             )
+            self._schedule_feishu(
+                strategy,
+                title=f"{log_label}（市价条件单）",
+                body_lines=[
+                    f"basis={basis} 加权均价≈{avg_raw:.6f}",
+                    f"下单数量(step)={qty_sl:.8f}",
+                    f"触发价≈{sl_price:.6f}",
+                    f"阈值约 {loss_u:.2f} U",
+                    f"algoId={sl_order_id}" if sl_order_id else "",
+                ],
+            )
             logger.info(
                 "%s SL placed sym=%s basis=%s avg=%s qty_sl=%s sl_price=%s loss_u=%s",
                 log_label,
@@ -163,6 +174,20 @@ class GridExecutor:
         except Exception as e:
             logger.error("%s SL failed strategy=%s: %s", log_label, strategy.id, e)
             strategy_log_service.warning(strategy.id, f"{log_label}失败: {e} (将使用浮亏监控止损)")
+
+    def _schedule_feishu(self, strategy, title: str, body_lines: list[str]) -> None:
+        """非阻塞推送飞书（未配置 webhook 时自动跳过）。"""
+        from .feishu_notify import schedule_trade_notify
+
+        lines = [ln for ln in body_lines if ln]
+        schedule_trade_notify(
+            strategy_id=strategy.id,
+            account_id=strategy.account_id,
+            symbol=strategy.symbol or "",
+            direction=strategy.direction or "",
+            title=title,
+            body_lines=lines,
+        )
 
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
@@ -276,6 +301,16 @@ class GridExecutor:
             strategy.id,
             f"开仓成功: {symbol} {strategy.direction} 数量={filled_qty:.4f} 价格={entry_price:.4f}",
         )
+        self._schedule_feishu(
+            strategy,
+            title="市价开仓成交",
+            body_lines=[
+                f"方向: {'开多(long)' if strategy.direction == 'long' else '开空(short)'}",
+                f"成交数量≈{filled_qty:.8f}",
+                f"成交价≈{entry_price:.8f}",
+                f"订单ID: {order.get('id', '')}",
+            ],
+        )
 
         # Record position in DB
         pos = Position(
@@ -319,6 +354,15 @@ class GridExecutor:
                     strategy.id,
                     f"挂单止盈: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%)",
                 )
+                self._schedule_feishu(
+                    strategy,
+                    title="挂单止盈（限价 reduce-only）",
+                    body_lines=[
+                        f"数量≈{filled_qty:.8f}",
+                        f"止盈价={tp_price:.8f}（{strategy.tp_pct}%）",
+                        f"订单ID: {tp_order.get('id', '')}",
+                    ],
+                )
             except Exception as e:
                 logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
                 strategy_log_service.error(strategy.id, f"挂单止盈失败: {e}")
@@ -349,10 +393,27 @@ class GridExecutor:
                 strategy.id,
                 f"挂单加仓: {placed}/{total} 层已挂单",
             )
+            self._schedule_feishu(
+                strategy,
+                title="挂单加仓（限价挂单汇总）",
+                body_lines=[
+                    f"已成功挂出 {placed}/{total} 层加仓限价单",
+                    f"基准入场价≈{entry_price:.8f}",
+                ],
+            )
         else:
             strategy_log_service.warning(
                 strategy.id,
                 f"挂单加仓: {placed}/{total} 层已挂单 (失败{total-placed}层可能因交易所订单/持仓限制, 建议降低max_layers)",
+            )
+            self._schedule_feishu(
+                strategy,
+                title="挂单加仓（部分失败）",
+                body_lines=[
+                    f"成功 {placed}/{total} 层",
+                    f"失败 {total - placed} 层，请留意交易所限额或持仓上限",
+                    f"基准入场价≈{entry_price:.8f}",
+                ],
             )
 
         logger.info(
@@ -448,6 +509,14 @@ class GridExecutor:
             strategy.id,
             f"止盈触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
         )
+        self._schedule_feishu(
+            strategy,
+            title="止盈触发（止盈单已成交）",
+            body_lines=[
+                f"当前价≈{current_price:.8f}",
+                "后续：记录平仓并按配置重开或未重开",
+            ],
+        )
 
         # TP filled → close all positions (skip market-close, TP already closed on exchange)
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, "take_profit")
@@ -458,11 +527,21 @@ class GridExecutor:
         # Reopen initial if configured and strategy still running; otherwise stop
         if strategy.reopen_after_close and strategy.status == "running":
             strategy_log_service.success(strategy.id, f"止盈成功,自动重开: {symbol}")
+            self._schedule_feishu(
+                strategy,
+                title="止盈完成 · 自动重开",
+                body_lines=["已按市价重新开首单并挂止盈/加仓/止损（若启用）"],
+            )
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy_log_service.success(strategy.id, f"止盈成功,策略停止: {symbol}")
             strategy.status = "stopped"
             await session.commit()
+            self._schedule_feishu(
+                strategy,
+                title="止盈完成 · 策略已停止",
+                body_lines=["reopen_after_close=否，策略标记为 stopped"],
+            )
 
         return True
 
@@ -519,6 +598,15 @@ class GridExecutor:
                 strategy.id,
                 f"加仓成交: Lv{next_level} 数量={filled_qty:.4f} 价格={fill_price:.4f}",
             )
+            self._schedule_feishu(
+                strategy,
+                title=f"加仓成交 Lv{next_level}",
+                body_lines=[
+                    f"成交数量≈{filled_qty:.8f}",
+                    f"成交价≈{fill_price:.8f}",
+                    f"备注: 当前价≈{current_price:.8f}",
+                ],
+            )
             logger.info("Grid add filled: %s lv=%d qty=%.4f price=%.4f", symbol, next_level, filled_qty, fill_price)
 
             # Cancel old TP order
@@ -546,6 +634,16 @@ class GridExecutor:
                     strategy_log_service.success(
                         strategy.id,
                         f"重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
+                    )
+                    self._schedule_feishu(
+                        strategy,
+                        title="重新挂单止盈（加仓后合并仓位）",
+                        body_lines=[
+                            f"合并数量≈{total_qty:.8f}",
+                            f"加权均价≈{avg_entry:.8f}",
+                            f"止盈价={tp_price:.8f}",
+                            f"订单ID: {tp_order_id}",
+                        ],
                     )
                 except Exception as e:
                     logger.error("Failed to place new TP after grid add: %s", e)
@@ -617,6 +715,14 @@ class GridExecutor:
             strategy.id,
             f"止损触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
         )
+        self._schedule_feishu(
+            strategy,
+            title="止损触发（Algo 条件市价单已成交）",
+            body_lines=[
+                f"当前价≈{current_price:.8f}",
+                "后续：平仓记录并按配置自动重开或未重开",
+            ],
+        )
 
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, "stop_loss")
 
@@ -624,11 +730,21 @@ class GridExecutor:
 
         if strategy.reopen_after_close and strategy.status == "running":
             strategy_log_service.success(strategy.id, f"止损成功,自动重开: {symbol}")
+            self._schedule_feishu(
+                strategy,
+                title="止损完成 · 自动重开",
+                body_lines=["市价止损后已重新开首单并挂新单（若启用止损单等）"],
+            )
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy_log_service.success(strategy.id, f"止损成功,策略停止: {symbol}")
             strategy.status = "stopped"
             await session.commit()
+            self._schedule_feishu(
+                strategy,
+                title="止损完成 · 策略已停止",
+                body_lines=["reopen_after_close=否"],
+            )
 
         return True
 
@@ -654,6 +770,14 @@ class GridExecutor:
                 strategy.id,
                 f"止损预警: 累计浮亏 {abs(cumulative_u):.2f}U (阈值 {self.engine.loss_threshold:.2f}U 的80%)",
             )
+            self._schedule_feishu(
+                strategy,
+                title="止损预警（SOFT 80%）",
+                body_lines=[
+                    f"累计浮亏≈{abs(cumulative_u):.2f}U",
+                    f"阈值={self.engine.loss_threshold:.2f}U（未平仓，继续监控）",
+                ],
+            )
             return False
 
         close_reason = "stop_loss"
@@ -668,6 +792,15 @@ class GridExecutor:
                 strategy.id,
                 f"恐慌止损: 第{layer}层单层亏损超50%，立即平仓",
             )
+            self._schedule_feishu(
+                strategy,
+                title="恐慌止损触发（单层亏损>50%）",
+                body_lines=[
+                    f"单层: 第{layer}层",
+                    f"当前价≈{current_price:.8f}",
+                    "后续：市价类平仓并按配置重开",
+                ],
+            )
         else:
             logger.warning(
                 "SL HARD: strategy=%d %s cumulative_u=%.2f threshold=%.2f",
@@ -677,16 +810,35 @@ class GridExecutor:
                 strategy.id,
                 f"硬止损触发: 累计浮亏 {abs(cumulative_u):.2f}U 达到阈值 {self.engine.loss_threshold:.2f}U",
             )
+            self._schedule_feishu(
+                strategy,
+                title="硬止损触发（累计浮亏达阈值）",
+                body_lines=[
+                    f"累计浮亏≈{abs(cumulative_u):.2f}U",
+                    f"阈值={self.engine.loss_threshold:.2f}U",
+                    f"当前价≈{current_price:.8f}",
+                ],
+            )
 
         await self._close_all(session, strategy, symbol, exchange, positions, current_price, close_reason)
 
         await session.refresh(strategy)
 
         if strategy.reopen_after_close and strategy.status == "running":
+            self._schedule_feishu(
+                strategy,
+                title="浮亏止损完成 · 自动重开",
+                body_lines=[f"原因={close_reason}", "已按配置重新开首单并挂新单"],
+            )
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy.status = "stopped"
             await session.commit()
+            self._schedule_feishu(
+                strategy,
+                title="浮亏止损完成 · 策略已停止",
+                body_lines=[f"原因={close_reason}", "reopen_after_close=否"],
+            )
 
         return True
 
