@@ -67,7 +67,7 @@ export default function StrategyDetailPage() {
   useEffect(() => { load(); }, [id]);
 
   useEffect(() => {
-    const timer = setInterval(() => loadRef.current(), 30000);
+    const timer = setInterval(() => loadRef.current(), 10000);
     return () => clearInterval(timer);
   }, []);
 

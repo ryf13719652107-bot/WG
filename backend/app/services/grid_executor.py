@@ -94,6 +94,8 @@ class GridExecutor:
         if sl_triggered:
             return
 
+        await session.commit()  # 持久化mark_price/unrealized_pnl
+
     async def _open_initial(self, session, strategy, symbol, exchange, current_price):
         """Open initial position at market + place TP limit + first grid add limit."""
         from sqlalchemy import select
