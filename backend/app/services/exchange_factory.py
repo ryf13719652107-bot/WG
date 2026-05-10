@@ -18,15 +18,20 @@ async def create_exchange_service(account) -> BaseExchangeService:
     from .binance_service import BinanceService
     from .okx_service import OkxService
 
-    api_key = decrypt(account.api_key_encrypted)
-    api_secret = decrypt(account.api_secret_encrypted)
+    api_key = decrypt(account.api_key_encrypted).strip()
+    api_secret = decrypt(account.api_secret_encrypted).strip()
     exchange_type = getattr(account, 'exchange', 'binance') or 'binance'
 
     if exchange_type == "okx":
         svc = OkxService(api_key, api_secret, account.testnet, account.hedge_mode)
         passphrase = getattr(account, 'okx_passphrase_encrypted', None)
         if passphrase:
-            svc.set_passphrase(decrypt(passphrase))
+            svc.set_passphrase(decrypt(passphrase).strip())
+        else:
+            logger.warning(
+                "OKX 账户 id=%s 未保存 Passphrase，请求将失败（Invalid Sign）；请删除后重新添加并填写 Passphrase",
+                getattr(account, "id", "?"),
+            )
         return svc
     else:
         return BinanceService(api_key, api_secret, account.testnet, account.hedge_mode)
