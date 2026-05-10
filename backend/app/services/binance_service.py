@@ -211,6 +211,7 @@ class BinanceService(BaseExchangeService):
         """Create a STOP_MARKET order using Binance Algo Order API (fapi/v1/algoOrder).
 
         Since 2025-12-09, Binance requires conditional orders to use the algoOrder endpoint.
+        Uses exchange.request() for compatibility with older ccxt versions.
         """
         formatted = self._format_symbol(symbol)
         base = formatted.replace("/", "").replace(":USDT", "")
@@ -237,7 +238,9 @@ class BinanceService(BaseExchangeService):
                 }
                 order = await retry_with_backoff(
                     f"binance.create_stop_loss_order(algo_combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
-                    lambda p=params: self.exchange.fapiPrivatePostAlgoOrder(p),
+                    lambda p=params: self.exchange.request(
+                        'fapi/v1/algoOrder', 'fapiPrivate', 'POST', p
+                    ),
                 )
                 return order
             except Exception as e:
@@ -304,7 +307,7 @@ class BinanceService(BaseExchangeService):
     async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
         """Cancel an Algo Order (conditional orders like STOP_MARKET).
 
-        Uses fapi/v1/algoOrder endpoint.
+        Uses fapi/v1/algoOrder endpoint via exchange.request() for compatibility.
         """
         formatted = self._format_symbol(symbol)
         base = formatted.replace("/", "").replace(":USDT", "")
@@ -314,7 +317,9 @@ class BinanceService(BaseExchangeService):
         }
         return await retry_with_backoff(
             "binance.cancel_algo_order",
-            lambda: self.exchange.fapiPrivateDeleteAlgoOrder(params),
+            lambda: self.exchange.request(
+                'fapi/v1/algoOrder', 'fapiPrivate', 'DELETE', params
+            ),
         )
 
     async def close_position(self, symbol: str, side: str) -> dict:
