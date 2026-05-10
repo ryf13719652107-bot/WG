@@ -48,20 +48,23 @@ async def _fetch_dashboard_exchange_slice(exchange) -> dict[str, Any]:
     unrealized_pnl_short = 0.0
     total_notional = 0.0
     exchange_positions: list[dict] = []
+    ex_id = getattr(exchange, "exchange_id", "") or type(exchange).__name__
     try:
-        balance = await asyncio.wait_for(exchange.fetch_balance(), timeout=8.0)
+        # OKX 首次请求会 load_markets()，在海外或弱网下易超过 8s，导致误判「余额获取失败」
+        balance = await asyncio.wait_for(exchange.fetch_balance(), timeout=25.0)
         total_balance = float(balance.get("total", {}).get("USDT", 0) or 0)
         available_balance = float(balance.get("free", {}).get("USDT", 0) or 0)
         balance_status = "ok"
     except asyncio.TimeoutError:
+        logging.error("Balance fetch timeout in dashboard slice (%s)", ex_id)
         balance_status = "error"
     except Exception as e:
-        logging.error("Balance fetch error in dashboard slice: %s", e)
+        logging.error("Balance fetch error in dashboard slice (%s): %s", ex_id, e)
         balance_status = "error"
 
     if balance_status == "ok":
         try:
-            positions = await asyncio.wait_for(exchange.fetch_positions(), timeout=8.0)
+            positions = await asyncio.wait_for(exchange.fetch_positions(), timeout=25.0)
             for p in positions:
                 contracts = float(p.get("contracts", 0) or 0)
                 if contracts > 0:
@@ -98,7 +101,7 @@ async def _fetch_dashboard_exchange_slice(exchange) -> dict[str, Any]:
                         "pnl_pct": round(pnl_pct, 2),
                     })
         except Exception as e:
-            logging.error("Position fetch error for dashboard: %s", e)
+            logging.error("Position fetch error for dashboard (%s): %s", ex_id, e)
 
     leverage_multiplier = 0.0
     if total_balance > 0 and total_notional > 0:

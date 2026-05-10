@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     logger.info("Step 5/5: Backend ready")
     from .services import ui_auth as _ui_auth_startup
 
-    env_on = bool((os.environ.get("WEB_UI_PASSWORD") or "").strip())
+    env_on = _ui_auth_startup.env_or_envfile_password_configured()
     db_on = _ui_auth_startup.database_password_configured()
     if _ui_auth_startup.auth_enabled():
         logger.info(

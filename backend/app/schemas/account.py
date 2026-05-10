@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 from typing import Optional
 
@@ -11,6 +11,12 @@ class AccountCreate(BaseModel):
     okx_passphrase: str | None = None
     testnet: bool = True
     hedge_mode: bool = True
+
+    @model_validator(mode="after")
+    def okx_requires_passphrase(self):
+        if self.exchange == "okx" and not (self.okx_passphrase or "").strip():
+            raise ValueError("OKX 必须填写 API 口令（Passphrase），否则无法签名请求")
+        return self
 
 
 class AccountResponse(BaseModel):

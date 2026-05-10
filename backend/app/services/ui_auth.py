@@ -30,6 +30,13 @@ def database_password_configured() -> bool:
     return bool(_db_password_overlay)
 
 
+def env_or_envfile_password_configured() -> bool:
+    """进程环境变量或 backend/.env（合并进 settings）中的 WEB_UI_PASSWORD 非空；不含数据库 overlay。"""
+    if (os.environ.get("WEB_UI_PASSWORD") or "").strip():
+        return True
+    return bool((getattr(settings, "web_ui_password", None) or "").strip())
+
+
 def _effective_web_ui_password() -> str:
     """优先级：进程环境变量 WEB_UI_PASSWORD > 数据库 bot_config > pydantic（.env 已合并进 settings）。"""
     v = (os.environ.get("WEB_UI_PASSWORD") or "").strip()

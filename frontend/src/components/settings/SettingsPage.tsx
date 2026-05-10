@@ -92,6 +92,10 @@ export default function SettingsPage() {
     if (!form.name.trim()) { setSaveError('请输入账户名称'); return; }
     if (!form.api_key.trim()) { setSaveError('请输入API Key'); return; }
     if (!form.api_secret.trim()) { setSaveError('请输入API Secret'); return; }
+    if (form.exchange === 'okx' && !form.okx_passphrase.trim()) {
+      setSaveError('OKX 必须填写 Passphrase（创建 API 时自定义的口令），否则无法拉取余额');
+      return;
+    }
 
     setSaveError('');
     try {
