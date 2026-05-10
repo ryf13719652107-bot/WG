@@ -385,10 +385,25 @@ class StrategyScheduler:
             if not current_price:
                 try:
                     ticker = await exchange.fetch_ticker(strategy.symbol)
-                    current_price = float(ticker.get("last", 0))
-                except Exception:
-                    logger.warning("Strategy %d: no price for %s", strategy_id, strategy.symbol)
+                    current_price = float(ticker.get("last", 0) or 0)
+                except Exception as e:
+                    logger.warning(
+                        "Strategy %d: no price for %s: %s",
+                        strategy_id,
+                        strategy.symbol,
+                        e,
+                    )
+                    strategy_log_service.warning(
+                        strategy_id,
+                        f"无法获取 {strategy.symbol} 行情，跳过本周期: {e}",
+                    )
                     return
+            if current_price <= 0:
+                strategy_log_service.warning(
+                    strategy_id,
+                    f"行情价格无效({current_price})，跳过本周期",
+                )
+                return
 
             # Execute grid strategy
             executor = self._executors.get(strategy_id)

@@ -67,25 +67,49 @@ class PriceStreamManager:
             except Exception as e:
                 logger.debug("Price callback error for %s: %s", norm, e)
 
+    async def _stop_exchange_tasks(self, exchange_id: str) -> None:
+        """Cancel WS + REST fallback tasks for one exchange (used when symbol set expands)."""
+        for d in (self._subscriptions, self._fallback_tasks):
+            t = d.pop(exchange_id, None)
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
     async def subscribe_exchange(self, exchange_id: str, symbols: list[str], exchange):
         """Start watching tickers for an exchange."""
         if not symbols:
             return
 
         norm_symbols = [self._norm(s) for s in symbols]
-        self._watched_symbols[exchange_id] = set(norm_symbols)
+        prev = set(self._watched_symbols.get(exchange_id, ()))
+        merged = prev | set(norm_symbols)
+        self._watched_symbols[exchange_id] = merged
         self._public_exchanges[exchange_id] = exchange
 
-        if exchange_id in self._subscriptions:
-            return  # already subscribed
+        # 已有订阅且交易对集合未变：无需重启
+        if exchange_id in self._subscriptions and merged == prev:
+            return
 
+        # 已有订阅但新增了交易对：必须重启 WS，否则会一直只推旧 symbol 的行情
+        if exchange_id in self._subscriptions:
+            logger.info(
+                "PriceStream: %s 交易对变更 (%d -> %d)，重启行情订阅",
+                exchange_id,
+                len(prev),
+                len(merged),
+            )
+            await self._stop_exchange_tasks(exchange_id)
+
+        sym_list = sorted(merged)
         self._running = True
         self._subscriptions[exchange_id] = asyncio.create_task(
-            self._ws_loop(exchange_id, exchange, list(norm_symbols))
+            self._ws_loop(exchange_id, exchange, sym_list)
         )
-        # Start REST fallback task for when WS disconnects
         self._fallback_tasks[exchange_id] = asyncio.create_task(
-            self._rest_fallback_loop(exchange_id, exchange, list(norm_symbols))
+            self._rest_fallback_loop(exchange_id, exchange, sym_list)
         )
 
     async def _ws_loop(self, exchange_id: str, exchange, symbols: list[str]):
