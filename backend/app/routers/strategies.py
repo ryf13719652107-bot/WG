@@ -113,6 +113,7 @@ async def _flatten_strategy_orders_and_positions(
 
     # 以交易所实时持仓为准（OKX 合约张数、hedge 下 side 常与 DB 有偏差），避免紧急平仓数量为 0 或下单被拒
     exchange_qty = 0.0
+    exchange_entry_cost = 0.0
     try:
         raw_pos = await exchange.fetch_positions([symbol])
         want = BaseExchangeService._norm_sym(symbol)
@@ -123,9 +124,15 @@ async def _flatten_strategy_orders_and_positions(
             p_side = BaseExchangeService.position_row_side_lower(rp)
             if p_side != d:
                 continue
-            exchange_qty += BaseExchangeService.position_row_contracts_abs(rp)
+            c = BaseExchangeService.position_row_contracts_abs(rp)
+            exchange_qty += c
+            ep = float(rp.get("entryPrice") or rp.get("entry_price") or 0)
+            if ep > 0 and c > 0:
+                exchange_entry_cost += ep * c
     except Exception as e:
         logging.warning("_flatten_strategy fetch_positions strategy=%d: %s", strategy_id, e)
+
+    ex_avg_entry = exchange_entry_cost / exchange_qty if exchange_qty > 1e-12 else 0.0
 
     close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
     close_qty = await exchange.normalize_order_amount(symbol, close_qty)
@@ -184,7 +191,14 @@ async def _flatten_strategy_orders_and_positions(
                     strategy_log_service.error(strategy_id, f"紧急平仓失败: {e}；备用: {e2}")
                 else:
                     strategy_log_service.error(strategy_id, f"删除策略平仓失败: {e}；备用: {e2}")
-    else:
+    if exit_price <= 0 and close_qty > 1e-12:
+        try:
+            tk = await exchange.fetch_ticker(symbol)
+            exit_price = float(tk.get("last", 0) or tk.get("close", 0) or 0)
+        except Exception as e:
+            logging.debug("_flatten_strategy ticker exit_price strategy=%d: %s", strategy_id, e)
+
+    if close_qty <= 1e-12:
         close_success = True
         if close_reason == "panic_close":
             strategy_log_service.info(strategy_id, "紧急平仓: 无持仓需要平仓")
@@ -220,6 +234,37 @@ async def _flatten_strategy_orders_and_positions(
         )
         db.add(trade)
         p.closed_at = now
+
+    if not positions and close_success and close_qty > 1e-12 and exit_price > 0:
+        ep_in = ex_avg_entry if ex_avg_entry > 0 else exit_price
+        qty0 = close_qty
+        is_long = direction.lower() == "long"
+        pnl0 = (exit_price - ep_in) * qty0 if is_long else (ep_in - exit_price) * qty0
+        pct0 = (
+            ((exit_price - ep_in) / ep_in * 100)
+            if is_long and ep_in > 0
+            else ((ep_in - exit_price) / ep_in * 100)
+            if ep_in > 0
+            else 0
+        )
+        db.add(
+            Trade(
+                strategy_id=strategy_id,
+                account_id=strategy.account_id,
+                symbol=symbol,
+                side=direction.lower(),
+                quantity=qty0,
+                entry_price=ep_in,
+                exit_price=exit_price,
+                realized_pnl=round(pnl0, 4),
+                pnl_pct=round(pct0, 2),
+                entry_time=now,
+                exit_time=now,
+                layer=0,
+                grid_level=0,
+                close_reason=close_reason,
+            )
+        )
 
     await db.flush()
     qty_report = close_qty if close_qty > 1e-12 else total_qty
@@ -332,7 +377,7 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     await _flatten_strategy_orders_and_positions(
         strategy,
         db,
-        close_reason="策略删除",
+        close_reason="strategy_deleted",
         use_order_tracker=not was_running,
     )
     # 平仓记录已写入 trades；删除持仓行，避免仅存 closed_at 脏数据

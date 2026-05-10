@@ -246,9 +246,9 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
             <span className="text-xs text-gray-600">默认1%，限价止盈</span>
           </div>
           <div>
-            <label className={labelClass}>累计亏损阈值 (U)</label>
+            <label className={labelClass}>止损触发亏损 (USDT)</label>
             <input type="number" step="0.01" {...register('cumulative_loss_threshold_u', { valueAsNumber: true })} className={inputClass} />
-            <span className="text-xs text-gray-600">0=禁用止损</span>
+            <span className="text-xs text-gray-600">按该亏损额推算触发价并挂交易所条件止损；0=不挂</span>
           </div>
         </div>
 

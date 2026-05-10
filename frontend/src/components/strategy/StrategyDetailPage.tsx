@@ -141,7 +141,7 @@ export default function StrategyDetailPage() {
             <div className={valClass}>{strategy.max_layers}</div>
           </div>
           <div>
-            <span className={labelClass}>累计亏损阈值</span>
+            <span className={labelClass}>止损触发亏损 (U)</span>
             <div className={valClass}>{strategy.cumulative_loss_threshold_u > 0 ? `${strategy.cumulative_loss_threshold_u} U` : '已禁用'}</div>
           </div>
           <div>

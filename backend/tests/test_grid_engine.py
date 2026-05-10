@@ -110,37 +110,8 @@ def test_stop_loss_price_matches_cumulative_loss_threshold():
     wavg = eng.calculate_avg_entry(legs)
     assert wavg == pytest.approx((400 + 606) / 10.0, abs=1e-6)
     sl2 = eng.stop_loss_price_for_fixed_usdt_loss(wavg, 10.0, loss_u, "long")
-    pnl_at_sl = eng.calculate_cumulative_loss(legs, sl2)
+    pnl_at_sl = sum((sl2 - p.entry_price) * p.quantity for p in legs)
     assert pnl_at_sl == pytest.approx(-loss_u, abs=0.05)
-
-
-def test_calculate_cumulative_loss_long():
-    s = MockStrategy()
-    eng = GridStrategyEngine(s)
-
-    class Pos:
-        def __init__(self, qty, price, side):
-            self.quantity = qty
-            self.entry_price = price
-            self.side = side
-
-    positions = [Pos(1.0, 100.0, "long"), Pos(1.5, 99.0, "long")]
-    loss = eng.calculate_cumulative_loss(positions, 98.0)
-    expected = (98.0 - 100.0) * 1.0 + (98.0 - 99.0) * 1.5
-    assert loss == pytest.approx(expected, abs=0.01)
-    assert loss < 0
-
-
-def test_should_stop_loss():
-    s = MockStrategy(cumulative_loss_threshold_u=50.0)
-    eng = GridStrategyEngine(s)
-    assert eng.should_stop_loss(-60.0) is True
-    assert eng.should_stop_loss(-40.0) is False
-    assert eng.should_stop_loss(10.0) is False
-
-    s2 = MockStrategy(cumulative_loss_threshold_u=0.0)
-    eng2 = GridStrategyEngine(s2)
-    assert eng2.should_stop_loss(-100.0) is False
 
 
 def test_get_next_grid_add():

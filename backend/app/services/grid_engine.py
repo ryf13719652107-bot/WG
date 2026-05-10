@@ -117,34 +117,6 @@ class GridStrategyEngine:
             return round(weighted_avg_entry + step, 8)
         return 0.0
 
-    def calculate_cumulative_loss(self, positions: list, current_price: float) -> float:
-        """Calculate cumulative unrealized U PnL across all layers for this strategy.
-
-        Returns value in USDT (U). Negative = loss.
-        """
-        total_u = 0.0
-        for p in positions:
-            qty = float(p.quantity)
-            if qty <= 0:
-                continue
-            entry = float(p.entry_price)
-            side = p.side
-
-            if side == "long":
-                upnl = (current_price - entry) * qty
-            else:
-                upnl = (entry - current_price) * qty
-
-            total_u += upnl
-
-        return total_u
-
-    def should_stop_loss(self, cumulative_u_pnl: float) -> bool:
-        """Check if cumulative U loss exceeds threshold."""
-        if self.loss_threshold <= 0:
-            return False
-        return abs(cumulative_u_pnl) >= self.loss_threshold and cumulative_u_pnl < 0
-
     def get_next_grid_add(self, last_entry_price: float, current_layer: int, side: str) -> Optional[GridLevel]:
         """Get the next grid add level parameters (for placing limit order after an add fills)."""
         next_level = current_layer + 1

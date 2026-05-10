@@ -16,7 +16,9 @@ class StrategyCreate(BaseModel):
     grid_drop_base_pct: float = Field(default=1.0, gt=0, le=100)
     grid_interval_multiplier: float = Field(default=1.5, ge=1.0, le=10.0)
     position_multiplier: float = Field(default=1.5, ge=1.0, le=10.0)
-    cumulative_loss_threshold_u: float = Field(default=0.0, ge=0)
+    cumulative_loss_threshold_u: float = Field(
+        default=0.0, ge=0, description="条件止损名义亏损额 U，用于挂交易所止损单；0=不挂",
+    )
     reopen_after_close: bool = True
 
 
@@ -29,7 +31,9 @@ class StrategyUpdate(BaseModel):
     grid_drop_base_pct: Optional[float] = Field(default=None, gt=0, le=100)
     grid_interval_multiplier: Optional[float] = Field(default=None, ge=1.0, le=10.0)
     position_multiplier: Optional[float] = Field(default=None, ge=1.0, le=10.0)
-    cumulative_loss_threshold_u: Optional[float] = Field(default=None, ge=0)
+    cumulative_loss_threshold_u: Optional[float] = Field(
+        default=None, ge=0, description="条件止损名义亏损额 U；0=不挂",
+    )
     reopen_after_close: Optional[bool] = None
 
 
