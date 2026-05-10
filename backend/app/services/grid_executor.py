@@ -127,14 +127,38 @@ class GridExecutor:
             logger.debug("filled_exit_price fetch_order %s: %s", order_id, e)
             return 0.0
 
+    @staticmethod
+    def _position_row_ct_val_hint(rp: dict, contracts_abs: float) -> float:
+        """从 ccxt 持仓行取每张合约基础数量（OKX 线性永续 PnL ∝ 张数×ctVal×价差）。"""
+        cs = float(rp.get("contractSize") or 0)
+        if cs > 0:
+            return cs
+        info = rp.get("info")
+        if isinstance(info, dict):
+            try:
+                v = float(info.get("ctVal") or 0)
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+        c = float(contracts_abs)
+        mark = float(rp.get("markPrice") or rp.get("mark_price") or 0)
+        notional = abs(float(rp.get("notional") or 0))
+        if c > 1e-12 and mark > 1e-12 and notional > 1e-12:
+            return notional / (c * mark)
+        return 0.0
+
     async def _avg_qty_for_stop_loss_basis(
         self,
         exchange,
         symbol: str,
         direction: str,
         db_positions: list,
-    ) -> tuple[float, float, str]:
-        """止损用加权均价与张数：优先使用交易所实时持仓（与浮亏口径一致），否则退回 DB."""
+    ) -> tuple[float, float, str, float]:
+        """止损用加权均价与张数：优先使用交易所实时持仓（与浮亏口径一致），否则退回 DB。
+
+        第四项为从持仓行解析的 ctVal 提示（>0 时优先于单独拉 instruments），避免 market 失败时退回 1.0 导致止损价算到 0 以下。
+        """
         side = direction.lower()
         qty_db = sum(float(p.quantity) for p in db_positions if float(p.quantity) > 0)
         avg_db = self.engine.calculate_avg_entry(db_positions) if qty_db > 0 else 0.0
@@ -148,6 +172,9 @@ class GridExecutor:
 
         ex_qty = 0.0
         ex_cost = 0.0
+        ex_ct_hint = 0.0
+        sum_notional = 0.0
+        sum_mc = 0.0
         for rp in raw or []:
             rsym = BaseExchangeService._norm_sym(str(rp.get("symbol") or ""))
             if rsym != want:
@@ -163,9 +190,21 @@ class GridExecutor:
                 continue
             ex_qty += c
             ex_cost += ep * c
+            sum_notional += abs(float(rp.get("notional") or 0))
+            mpx = float(rp.get("markPrice") or rp.get("mark_price") or 0)
+            if mpx > 0:
+                sum_mc += mpx * c
+            if ex_ct_hint <= 0:
+                h = GridExecutor._position_row_ct_val_hint(rp, c)
+                if h > 0:
+                    ex_ct_hint = h
 
         if ex_qty > 1e-12:
             avg_ex = ex_cost / ex_qty
+            if ex_ct_hint <= 0 and sum_notional > 1e-12:
+                wmark = sum_mc / ex_qty if ex_qty > 1e-12 else 0.0
+                if wmark > 1e-12:
+                    ex_ct_hint = sum_notional / (ex_qty * wmark)
             if qty_db > 1e-12 and (
                 abs(ex_qty - qty_db) / qty_db > 0.015
                 or abs(avg_ex - avg_db) / max(avg_db, 1e-12) > 0.015
@@ -174,9 +213,9 @@ class GridExecutor:
                     "SL basis prefers exchange avg=%.6f qty=%.8f over DB avg=%.6f qty=%.8f",
                     avg_ex, ex_qty, avg_db, qty_db,
                 )
-            return avg_ex, ex_qty, "exchange"
+            return avg_ex, ex_qty, "exchange", ex_ct_hint
 
-        return avg_db, qty_db, "db"
+        return avg_db, qty_db, "db", 0.0
 
     async def _compute_and_place_stop_loss(
         self,
@@ -193,11 +232,13 @@ class GridExecutor:
         if loss_u <= 0:
             return
 
-        avg_raw, qty_raw, basis = await self._avg_qty_for_stop_loss_basis(
+        avg_raw, qty_raw, basis, ct_from_pos = await self._avg_qty_for_stop_loss_basis(
             exchange, symbol, strategy.direction, db_positions
         )
         qty_sl = await exchange.normalize_order_amount(symbol, qty_raw)
         ct_val = await exchange.linear_contract_ct_val(symbol)
+        if ct_from_pos > 0:
+            ct_val = ct_from_pos
         sl_price = self.engine.stop_loss_price_for_fixed_usdt_loss(
             avg_raw, qty_sl, loss_u, strategy.direction, ct_val=ct_val,
         )
@@ -206,7 +247,8 @@ class GridExecutor:
         if sl_price <= 0 or qty_sl <= 0 or not self._check_order_qty(qty_sl, symbol):
             strategy_log_service.warning(
                 strategy.id,
-                f"{log_label}跳过: 无效价或量 basis={basis} avg={avg_raw:.6f} raw_qty={qty_raw:.8f} step_qty={qty_sl:.8f}",
+                f"{log_label}跳过: 无效价或量 basis={basis} avg={avg_raw:.6f} raw_qty={qty_raw:.8f} "
+                f"step_qty={qty_sl:.8f} ct_val={ct_val:.8f} loss_u={loss_u:.6f} sl_price={sl_price:.8f}",
             )
             return
 

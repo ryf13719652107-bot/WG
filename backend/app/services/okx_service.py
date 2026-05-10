@@ -213,8 +213,6 @@ class OkxService(BaseExchangeService):
         try:
             await self.exchange.load_markets()
             m = self.exchange.market(formatted)
-            if not m.get("contract"):
-                return 1.0
             cs = float(m.get("contractSize") or 0)
             info = m.get("info") or {}
             if isinstance(info, dict) and cs <= 0:
@@ -224,6 +222,8 @@ class OkxService(BaseExchangeService):
                     cs = 0.0
             if cs > 0:
                 return float(cs)
+            if not m.get("contract"):
+                return 1.0
         except Exception as e:
             logger.warning("OKX linear_contract_ct_val(%s): %s", symbol, e)
         return 1.0
