@@ -34,6 +34,12 @@ class StrategyScheduler:
         self._executors: dict[int, GridExecutor] = {}
         self._order_watch_tasks: dict[int, asyncio.Task] = {}
         self._running = False
+        self._strategy_locks: dict[int, asyncio.Lock] = {}
+
+    def _get_strategy_lock(self, strategy_id: int) -> asyncio.Lock:
+        if strategy_id not in self._strategy_locks:
+            self._strategy_locks[strategy_id] = asyncio.Lock()
+        return self._strategy_locks[strategy_id]
 
     @property
     def scheduler(self) -> AsyncIOScheduler:
@@ -41,6 +47,7 @@ class StrategyScheduler:
 
     async def resume_running_strategies(self):
         """Restart: re-register jobs for strategies that were running, rebuild exchange connections."""
+        from .order_tracker import order_tracker
         async with async_session() as session:
             result = await session.execute(
                 select(Strategy).where(Strategy.status == "running").order_by(Strategy.id)
@@ -48,16 +55,28 @@ class StrategyScheduler:
             rows = list(result.scalars().all())
         for s in rows:
             self._register_strategy_job(s.id)
-            # Pre-warm exchange service
             exchange = await get_exchange_service(s.account_id)
             if exchange:
                 self._exchange_services[s.id] = exchange
+                try:
+                    open_orders = await exchange.fetch_open_orders(s.symbol)
+                    for oo in (open_orders or []):
+                        oid = str(oo.get("id", ""))
+                        side = (oo.get("side") or "").lower()
+                        otype = (oo.get("type") or "").lower()
+                        amount = float(oo.get("amount", 0) or 0)
+                        price = float(oo.get("price", 0) or 0)
+                        if oid and amount > 0:
+                            purpose = "tp" if side != s.direction.lower() else "grid_add"
+                            order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
+                    logger.info("Strategy %d: restored %d orders to tracker", s.id, len(open_orders or []))
+                except Exception as e:
+                    logger.warning("Strategy %d: failed to restore orders: %s", s.id, e)
             self._engines[s.id] = GridStrategyEngine(s)
             self._executors[s.id] = GridExecutor(self._engines[s.id])
             strategy_log_service.info(s.id, "后端已重启：已恢复调度任务")
             logger.info("Resumed scheduler for strategy %d (%s %s)", s.id, s.symbol, s.direction)
 
-        # Subscribe to price feeds for all resumed strategies' symbols
         await self._start_price_stream()
 
     async def _start_price_stream(self):
@@ -108,12 +127,17 @@ class StrategyScheduler:
     async def _watch_orders_loop(self, strategy_id: int, exchange, symbol: str):
         """监听订单成交(WebSocket),成交后立即触发策略tick."""
         from .order_tracker import order_tracker, OrderState
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        base_delay = 2.0
+
         while self._running and strategy_id in self._order_watch_tasks:
             try:
                 if not hasattr(exchange, 'ws_exchange') or not exchange.ws_exchange:
                     await asyncio.sleep(2)
                     continue
                 orders = await exchange.ws_exchange.watch_orders(symbol)
+                consecutive_errors = 0
                 for raw in (orders if isinstance(orders, list) else [orders]):
                     oid = str(raw.get("id", "") or "")
                     ws_status = (raw.get("status") or "").lower()
@@ -122,19 +146,30 @@ class StrategyScheduler:
                     co = order_tracker.get(oid)
                     if not co or co.strategy_id != strategy_id:
                         continue
-                    # 只更新filled/price,不改status(保留PENDING让check_order REST确认后才改)
                     co.filled = float(raw.get("filled", 0) or 0) or co.filled
                     avg = float(raw.get("average", 0) or 0)
                     if avg > 0:
                         co.price = avg
                     logger.info("WS order update: %s status=%s filled=%.4f for strategy %d", oid, ws_status, co.filled, strategy_id)
-                    # 立即触发策略执行
                     asyncio.create_task(self._execute_strategy(strategy_id))
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug("Order watcher %d error: %s", strategy_id, e)
-                await asyncio.sleep(5)
+                consecutive_errors += 1
+                err_str = str(e).lower()
+                is_permanent = any(x in err_str for x in ["invalid api key", "signature", "permission", "banned", "forbidden"])
+                if is_permanent:
+                    logger.error("Order watcher %d permanent error: %s — stopping watcher", strategy_id, e)
+                    break
+                delay = min(base_delay * (2 ** min(consecutive_errors, 5)), 60.0)
+                if consecutive_errors <= 3:
+                    logger.debug("Order watcher %d error (%d): %s — retry in %.1fs", strategy_id, consecutive_errors, e, delay)
+                else:
+                    logger.warning("Order watcher %d repeated errors (%d): %s — retry in %.1fs", strategy_id, consecutive_errors, e, delay)
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error("Order watcher %d exceeded max errors, falling back to REST polling", strategy_id)
+                    break
+                await asyncio.sleep(delay)
 
     def _register_strategy_job(self, strategy_id: int):
         job_id = f"strategy_{strategy_id}"
@@ -217,17 +252,42 @@ class StrategyScheduler:
         self._strategy_jobs.pop(strategy_id, None)
         self._engines.pop(strategy_id, None)
         self._executors.pop(strategy_id, None)
-        self._exchange_services.pop(strategy_id, None)
         task = self._order_watch_tasks.pop(strategy_id, None)
         if task and not task.done():
             task.cancel()
         if self._aps.get_job(job_id):
             self._aps.remove_job(job_id)
+
+        exchange = self._exchange_services.pop(strategy_id, None)
+        self._strategy_locks.pop(strategy_id, None)
+
         async with async_session() as session:
             strategy = await session.get(Strategy, strategy_id)
-            if strategy:
-                strategy.status = "stopped"
-                await session.commit()
+            if not strategy:
+                return
+
+            symbol = strategy.symbol
+
+            if exchange:
+                try:
+                    open_orders = await exchange.fetch_open_orders(symbol)
+                    cancel_tasks = []
+                    for oo in (open_orders or []):
+                        oid = str(oo.get("id", ""))
+                        if oid:
+                            cancel_tasks.append(exchange.cancel_order(oid, symbol))
+                    if cancel_tasks:
+                        results = await asyncio.gather(*cancel_tasks, return_exceptions=True)
+                        success = sum(1 for r in results if not isinstance(r, Exception))
+                        logger.info("Strategy %d stopped: cancelled %d/%d orders on exchange", strategy_id, success, len(cancel_tasks))
+                except Exception as e:
+                    logger.warning("Strategy %d stop: failed to cancel orders: %s", strategy_id, e)
+
+            from .order_tracker import order_tracker
+            order_tracker.clear_strategy(strategy_id)
+
+            strategy.status = "stopped"
+            await session.commit()
         logger.info("Strategy %d stopped", strategy_id)
 
     async def _get_exchange_for_strategy(self, strategy_id: int) -> Optional[BaseExchangeService]:
@@ -243,11 +303,16 @@ class StrategyScheduler:
             return exchange
 
     async def _execute_strategy(self, strategy_id: int):
-        async with _STRATEGY_SEMAPHORE:
-            try:
-                await self._execute_strategy_impl(strategy_id)
-            except Exception as e:
-                logger.error("Strategy %d unhandled error: %s", strategy_id, e, exc_info=True)
+        lock = self._get_strategy_lock(strategy_id)
+        if lock.locked():
+            logger.debug("Strategy %d already executing, skip", strategy_id)
+            return
+        async with lock:
+            async with _STRATEGY_SEMAPHORE:
+                try:
+                    await self._execute_strategy_impl(strategy_id)
+                except Exception as e:
+                    logger.error("Strategy %d unhandled error: %s", strategy_id, e, exc_info=True)
 
     async def _execute_strategy_impl(self, strategy_id: int):
         async with async_session() as session:

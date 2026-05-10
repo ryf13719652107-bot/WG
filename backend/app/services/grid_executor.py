@@ -27,9 +27,22 @@ class GridExecutor:
        - PANIC (single layer >50% loss): close all + reopen initial
     """
 
+    MAX_CONSECUTIVE_FAILURES = 3
+    MAX_ORDER_QTY = 1000000.0
+
     def __init__(self, engine: GridStrategyEngine):
         self.engine = engine
         self.sl_manager = StopLossManager(threshold_u=engine.loss_threshold)
+        self._consecutive_failures = 0
+
+    @staticmethod
+    def _check_order_qty(qty: float, symbol: str) -> bool:
+        if qty <= 0:
+            return False
+        if qty > GridExecutor.MAX_ORDER_QTY:
+            logger.warning("Order qty %.2f exceeds max limit for %s", qty, symbol)
+            return False
+        return True
 
     @staticmethod
     def _round_qty(qty: float) -> float:
@@ -100,10 +113,16 @@ class GridExecutor:
         """Open initial position at market + place TP limit + first grid add limit."""
         from sqlalchemy import select
 
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            logger.error("Strategy %d: consecutive failures (%d) exceeded limit, stopping", strategy.id, self._consecutive_failures)
+            strategy_log_service.error(strategy.id, f"连续开仓失败{self._consecutive_failures}次,策略自动停止")
+            strategy.status = "stopped"
+            await session.commit()
+            return
+
         side_raw = "buy" if strategy.direction == "long" else "sell"
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
 
-        # Calculate position quantity (USDT notional / price, no leverage)
         qty = 0.0
         if strategy.base_qty_type == "margin_pct":
             try:
@@ -115,6 +134,7 @@ class GridExecutor:
             except Exception as e:
                 logger.warning("Failed to calculate margin-based qty: %s", e)
                 strategy_log_service.error(strategy.id, f"开仓失败: 获取余额异常 - {e}")
+                self._consecutive_failures += 1
                 return
         else:
             if current_price > 0:
@@ -122,16 +142,17 @@ class GridExecutor:
             else:
                 logger.error("Cannot calculate qty: current_price is 0")
                 strategy_log_service.error(strategy.id, "开仓失败: 无法获取当前价格")
+                self._consecutive_failures += 1
                 return
 
         if qty <= 0:
             logger.error("Calculated qty is 0 for strategy %d", strategy.id)
             strategy_log_service.error(strategy.id, "开仓失败: 计算数量为0")
+            self._consecutive_failures += 1
             return
 
         qty = self._round_qty(qty)
 
-        # 1. Market open initial position
         try:
             order = await exchange.create_market_order(
                 symbol, side_raw, qty, reduce_only=False, position_side=position_side,
@@ -139,7 +160,10 @@ class GridExecutor:
         except Exception as e:
             logger.error("Failed to open initial position for %s %s: %s", strategy.id, symbol, e)
             strategy_log_service.error(strategy.id, f"开仓失败: {symbol} {strategy.direction} - {e}")
+            self._consecutive_failures += 1
             return
+
+        self._consecutive_failures = 0
 
         entry_price = float(order.get("average", 0) or order.get("price", 0) or current_price)
         filled_qty = float(order.get("filled", qty) or qty)
@@ -175,24 +199,27 @@ class GridExecutor:
         # 2. Place TP limit order
         tp_price = self.engine.calculate_tp_price(entry_price, strategy.direction)
         tp_side = "sell" if strategy.direction == "long" else "buy"
-        try:
-            tp_order = await exchange.create_limit_order(
-                symbol, tp_side, filled_qty, tp_price,
-                reduce_only=True, position_side=position_side,
-            )
-            pos.tp_limit_order_id = str(tp_order.get("id", ""))
-            pos.take_profit_price = tp_price
-            order_tracker.add(
-                pos.tp_limit_order_id, symbol, tp_side, "limit",
-                filled_qty, tp_price, strategy.id, "tp",
-            )
-            strategy_log_service.success(
-                strategy.id,
-                f"挂单止盈: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%)",
-            )
-        except Exception as e:
-            logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
-            strategy_log_service.error(strategy.id, f"挂单止盈失败: {e}")
+        if self._check_order_qty(filled_qty, symbol):
+            try:
+                tp_order = await exchange.create_limit_order(
+                    symbol, tp_side, filled_qty, tp_price,
+                    reduce_only=True, position_side=position_side,
+                )
+                pos.tp_limit_order_id = str(tp_order.get("id", ""))
+                pos.take_profit_price = tp_price
+                order_tracker.add(
+                    pos.tp_limit_order_id, symbol, tp_side, "limit",
+                    filled_qty, tp_price, strategy.id, "tp",
+                )
+                strategy_log_service.success(
+                    strategy.id,
+                    f"挂单止盈: 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%)",
+                )
+            except Exception as e:
+                logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
+                strategy_log_service.error(strategy.id, f"挂单止盈失败: {e}")
+        else:
+            strategy_log_service.warning(strategy.id, f"止盈数量超限({filled_qty:.2f}),跳过挂单,请手动止盈")
 
         await session.commit()
 
@@ -374,26 +401,29 @@ class GridExecutor:
             tp_price = self.engine.calculate_tp_price(avg_entry, side)
             tp_side = "sell" if side == "long" else "buy"
             total_qty = sum(float(p.quantity) for p in positions)
-            try:
-                tp_order = await exchange.create_limit_order(
-                    symbol, tp_side, total_qty, tp_price,
-                    reduce_only=True, position_side=position_side,
-                )
-                tp_order_id = str(tp_order.get("id", ""))
-                for p in positions:
-                    p.tp_limit_order_id = tp_order_id
-                    p.take_profit_price = tp_price
-                order_tracker.add(
-                    tp_order_id, symbol, tp_side, "limit",
-                    total_qty, tp_price, strategy.id, "tp",
-                )
-                strategy_log_service.success(
-                    strategy.id,
-                    f"重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
-                )
-            except Exception as e:
-                logger.error("Failed to place new TP after grid add: %s", e)
-                strategy_log_service.error(strategy.id, f"重新挂单止盈失败: {e}")
+            if self._check_order_qty(total_qty, symbol):
+                try:
+                    tp_order = await exchange.create_limit_order(
+                        symbol, tp_side, total_qty, tp_price,
+                        reduce_only=True, position_side=position_side,
+                    )
+                    tp_order_id = str(tp_order.get("id", ""))
+                    for p in positions:
+                        p.tp_limit_order_id = tp_order_id
+                        p.take_profit_price = tp_price
+                    order_tracker.add(
+                        tp_order_id, symbol, tp_side, "limit",
+                        total_qty, tp_price, strategy.id, "tp",
+                    )
+                    strategy_log_service.success(
+                        strategy.id,
+                        f"重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
+                    )
+                except Exception as e:
+                    logger.error("Failed to place new TP after grid add: %s", e)
+                    strategy_log_service.error(strategy.id, f"重新挂单止盈失败: {e}")
+            else:
+                strategy_log_service.warning(strategy.id, f"止盈数量超限({total_qty:.2f}),跳过挂单,请手动止盈")
 
             await session.commit()
             # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层
