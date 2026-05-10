@@ -60,6 +60,37 @@ class GridExecutor:
             return round(qty, 6)
         return round(qty, 8)
 
+    async def _purge_exchange_open_orders(self, exchange, symbol: str, strategy_id: int) -> int:
+        """止盈/止损等平仓记账后：扫尾撤销该交易对在交易所可见的全部挂单（普通+算法/触发），再挂新单不撞单。"""
+        n = 0
+        ex_id = getattr(exchange, "exchange_id", "") or ""
+        if ex_id == "okx" and hasattr(exchange, "cancel_all_pending_orders_for_symbol"):
+            try:
+                n += await exchange.cancel_all_pending_orders_for_symbol(symbol)
+            except Exception as e:
+                logger.warning("purge OKX bulk %s strategy=%d: %s", symbol, strategy_id, e)
+
+        try:
+            oo = await exchange.fetch_open_orders(symbol)
+            for row in oo or []:
+                oid = str(row.get("id") or row.get("orderId") or row.get("algoId") or "")
+                if not oid:
+                    continue
+                try:
+                    await exchange.cancel_order(oid, symbol)
+                    n += 1
+                except Exception as e:
+                    logger.debug("purge cancel_order %s: %s", oid, e)
+        except Exception as e:
+            logger.warning("purge fetch_open_orders %s strategy=%d: %s", symbol, strategy_id, e)
+
+        if hasattr(exchange, "cancel_all_open_algo_orders"):
+            try:
+                n += await exchange.cancel_all_open_algo_orders(symbol)
+            except Exception as e:
+                logger.debug("purge cancel_all_open_algo_orders %s: %s", symbol, e)
+        return n
+
     async def _avg_qty_for_stop_loss_basis(
         self,
         exchange,
@@ -931,4 +962,13 @@ class GridExecutor:
                 f"参考平仓价≈{current_price:.6f}",
             )
         order_tracker.clear_strategy(strategy.id)
+        try:
+            purged = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+            if purged > 0:
+                strategy_log_service.info(
+                    strategy.id,
+                    f"已撤销交易所残留挂单: {symbol} 约 {purged} 笔（平仓记账后扫尾，便于重新开仓挂单）",
+                )
+        except Exception as e:
+            logger.warning("purge after close_all strategy=%d: %s", strategy.id, e)
         logger.info("Closed all %s positions for strategy=%d reason=%s exchange_ok=%s", symbol, strategy.id, reason, close_success)
