@@ -184,61 +184,71 @@ class BinanceService(BaseExchangeService):
 
     # ---- Orders (Private) ----
 
-    def _order_params(self, position_side: str, reduce_only: bool = False) -> dict:
-        """Build params dict. positionSide and reduceOnly only sent in hedge mode."""
-        params: dict = {}
-        if self.hedge_mode:
-            params["positionSide"] = position_side
-            if reduce_only:
-                params["reduceOnly"] = True
-        return params
-
     async def create_market_order(
         self, symbol: str, side: str, amount: float,
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
         formatted = self._format_symbol(symbol)
-        params = self._order_params(position_side, reduce_only)
-        try:
-            return await retry_with_backoff(
-                "binance.create_market_order",
-                lambda: self.exchange.create_order(
-                    symbol=formatted, type="market", side=side, amount=amount, params=params,
-                ),
-            )
-        except Exception as e:
-            if "-1106" in str(e) and params:
-                return await retry_with_backoff(
-                    "binance.create_market_order(noHedge)",
-                    lambda: self.exchange.create_order(
-                        symbol=formatted, type="market", side=side, amount=amount,
-                    ),
-                )
-            raise
+        return await self._create_order_with_fallback(
+            formatted, "market", side, amount, None,
+            reduce_only, position_side, "market",
+        )
 
     async def create_limit_order(
         self, symbol: str, side: str, amount: float, price: float,
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
-        params = self._order_params(position_side, reduce_only)
-        try:
-            return await retry_with_backoff(
-                "binance.create_limit_order",
-                lambda: self.exchange.create_order(
-                    symbol=self._format_symbol(symbol),
-                    type="limit", side=side, amount=amount, price=price, params=params,
-                ),
-            )
-        except Exception as e:
-            if "-1106" in str(e) and params:
+        formatted = self._format_symbol(symbol)
+        return await self._create_order_with_fallback(
+            formatted, "limit", side, amount, price,
+            reduce_only, position_side, "limit",
+        )
+
+    async def _create_order_with_fallback(
+        self, formatted_symbol: str, order_type: str,
+        side: str, amount: float, price: float | None,
+        reduce_only: bool, position_side: str, label: str,
+    ) -> dict:
+        """Try order with hedge params. Fallback through param combos on Binance errors."""
+        # Strategy of param combos to try
+        combos = []
+        if self.hedge_mode:
+            p1: dict = {"positionSide": position_side}
+            if reduce_only:
+                p1["reduceOnly"] = True
+            combos.append(p1)
+            # -1106=reduceOnly not needed, keep positionSide
+            if reduce_only:
+                combos.append({"positionSide": position_side})
+            # -4061=positionSide wrong, try without
+            combos.append({})
+        else:
+            p: dict = {}
+            if reduce_only:
+                p["reduceOnly"] = True
+            combos.append(p)
+            combos.append({})
+
+        last_exc = None
+        for idx, params in enumerate(combos):
+            try:
+                extra = {"type": order_type, "side": side, "amount": amount}
+                if price is not None:
+                    extra["price"] = price
+                extra["params"] = params if params else None
+                tag = f"binance.create_{label}_order(combo{idx})" if idx > 0 else f"binance.create_{label}_order"
                 return await retry_with_backoff(
-                    "binance.create_limit_order(noHedge)",
-                    lambda: self.exchange.create_order(
-                        symbol=self._format_symbol(symbol),
-                        type="limit", side=side, amount=amount, price=price,
-                    ),
+                    tag,
+                    lambda s=formatted_symbol, e=extra: self.exchange.create_order(symbol=s, **e),
                 )
-            raise
+            except Exception as e:
+                last_exc = e
+                err_str = str(e)
+                if "-1106" in err_str or "-4061" in err_str:
+                    logger.debug("Order %s combo%d (-1106/-4061), trying next", label, idx)
+                    continue
+                raise
+        raise last_exc
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
         return await retry_with_backoff(
