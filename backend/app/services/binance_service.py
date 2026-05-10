@@ -208,28 +208,31 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a STOP_MARKET order for Binance USDM Futures."""
+        """Create a STOP_MARKET order for Binance USDM Futures using private API."""
         formatted = self._format_symbol(symbol)
+        base = formatted.replace("/", "").replace(":USDT", "")
 
         combos = []
         if self.hedge_mode:
-            combos.append({"positionSide": position_side, "reduceOnly": True, "stopPrice": stop_price})
-            combos.append({"reduceOnly": True, "stopPrice": stop_price})
+            combos.append({"positionSide": position_side})
+            combos.append({})
         else:
-            combos.append({"reduceOnly": True, "stopPrice": stop_price})
+            combos.append({})
 
         last_exc = None
-        for idx, params in enumerate(combos):
+        for idx, extra in enumerate(combos):
             try:
+                params = {
+                    "symbol": base,
+                    "side": side.upper(),
+                    "type": "STOP_MARKET",
+                    "quantity": str(amount),
+                    "stopPrice": str(stop_price),
+                    **extra,
+                }
                 order = await retry_with_backoff(
                     f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
-                    lambda p=params: self.exchange.create_order(
-                        symbol=formatted,
-                        type="stop_market",
-                        side=side,
-                        amount=amount,
-                        params=p,
-                    ),
+                    lambda p=params: self.exchange.fapiPrivatePostOrder(p),
                 )
                 return order
             except Exception as e:
