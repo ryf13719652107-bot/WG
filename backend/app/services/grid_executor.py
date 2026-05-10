@@ -187,10 +187,10 @@ class GridExecutor:
 
         await session.commit()
 
-        # 3. Place first grid add limit order
+        # 3. Place all grid add limit orders
         grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
-        if grid_levels:
-            await self._place_grid_add(session, strategy, symbol, exchange, pos, grid_levels[0])
+        for gl in grid_levels:
+            await self._place_grid_add(session, strategy, symbol, exchange, pos, gl)
 
         logger.info(
             "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f",
@@ -340,12 +340,7 @@ class GridExecutor:
                 logger.error("Failed to place new TP after grid add: %s", e)
 
             await session.commit()
-
-            # Place next grid add if below max layers (use original base price to avoid grid drift)
-            base_price = float(positions[0].grid_trigger_price or positions[0].entry_price)
-            next_gl = self.engine.get_next_grid_add(base_price, len(positions) - 1, side)
-            if next_gl:
-                await self._place_grid_add(session, strategy, symbol, exchange, pos, next_gl)
+            # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层
 
         return any_filled
 
