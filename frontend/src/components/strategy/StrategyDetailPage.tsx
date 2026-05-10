@@ -4,6 +4,7 @@ import { api } from '../../services/api';
 import type { Strategy } from '../../types/strategy';
 import type { Trade } from '../../types';
 import { ArrowLeft, Terminal } from 'lucide-react';
+import { formatCloseReason } from '../../utils/tradeUi';
 
 interface LogEntry { time: string; level: string; message: string; }
 
@@ -240,9 +241,7 @@ export default function StrategyDetailPage() {
                       {t.pnl_pct >= 0 ? '+' : ''}{t.pnl_pct?.toFixed(2)}%
                     </td>
                     <td className="py-1.5 px-2 text-right text-gray-400">L{t.layer}/G{t.grid_level ?? 0}</td>
-                    <td className="py-1.5 px-2 text-right text-gray-400">
-                      {t.close_reason === 'take_profit' ? '止盈' : t.close_reason === 'stop_loss' ? '止损' : t.close_reason === 'panic_close' ? '紧急平仓' : t.close_reason === 'sync' ? '同步平仓' : t.close_reason === 'margin_stop' ? '保证金止损' : t.close_reason === 'manual' ? '手动平仓' : t.close_reason}
-                    </td>
+                    <td className="py-1.5 px-2 text-right text-gray-400">{formatCloseReason(t.close_reason)}</td>
                     <td className="py-1.5 px-2 text-right text-gray-500">{fmtTime(t.exit_time)}</td>
                   </tr>
                 ))}

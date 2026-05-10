@@ -3,14 +3,24 @@ import { api } from '../../services/api';
 import type { Account, FeishuNotifySettings } from '../../types';
 import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare } from 'lucide-react';
 
+const FEISHU_DEFAULT: FeishuNotifySettings = {
+  webhook_masked: '',
+  webhook_source: 'none',
+  keyword_prefix: '[WG]',
+  has_database_webhook_override: false,
+  has_database_prefix_override: false,
+};
+
 export default function SettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', exchange: 'binance', api_key: '', api_secret: '', okx_passphrase: '', testnet: true, hedge_mode: true });
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [feishu, setFeishu] = useState<FeishuNotifySettings | null>(null);
+  const [feishu, setFeishu] = useState<FeishuNotifySettings>(FEISHU_DEFAULT);
+  const [feishuLoadFailed, setFeishuLoadFailed] = useState(false);
+  const [loadingFeishu, setLoadingFeishu] = useState(false);
   const [webhookDraft, setWebhookDraft] = useState('');
   const [keywordDraft, setKeywordDraft] = useState('');
   const [keywordUseEnvDefault, setKeywordUseEnvDefault] = useState(false);
@@ -18,32 +28,47 @@ export default function SettingsPage() {
   const [feishuSaveError, setFeishuSaveError] = useState('');
   const [feishuSaving, setFeishuSaving] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const loadAccounts = async () => {
+    setLoadingAccounts(true);
     setError('');
     try {
-      const [result, fd] = await Promise.all([
-        api.listAccounts(),
-        api.getFeishuNotify().catch(() => null),
-      ]);
+      const result = await api.listAccounts();
       setAccounts(result);
-      if (fd) {
-        setFeishu(fd);
-        setKeywordDraft(fd.keyword_prefix);
-        setKeywordUseEnvDefault(!fd.has_database_prefix_override);
-      }
-      setWebhookDraft('');
-      setClearWebhookDb(false);
-      setFeishuSaveError('');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(`加载账户失败: ${msg}`);
       setAccounts([]);
     }
-    setLoading(false);
+    setLoadingAccounts(false);
   };
 
-  useEffect(() => { load(); }, []);
+  const loadFeishu = async () => {
+    setFeishuLoadFailed(false);
+    setLoadingFeishu(true);
+    try {
+      const fd = await api.getFeishuNotify();
+      setFeishu(fd);
+      setKeywordDraft(fd.keyword_prefix);
+      setKeywordUseEnvDefault(!fd.has_database_prefix_override);
+    } catch {
+      setFeishu(FEISHU_DEFAULT);
+      setKeywordDraft(FEISHU_DEFAULT.keyword_prefix);
+      setKeywordUseEnvDefault(true);
+      setFeishuLoadFailed(true);
+    }
+    setWebhookDraft('');
+    setClearWebhookDb(false);
+    setFeishuSaveError('');
+    setLoadingFeishu(false);
+  };
+
+  const load = async () => {
+    await Promise.all([loadAccounts(), loadFeishu()]);
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
 
   const handleAdd = async () => {
     if (!form.name.trim()) { setSaveError('请输入账户名称'); return; }
@@ -86,6 +111,7 @@ export default function SettingsPage() {
       setKeywordUseEnvDefault(!updated.has_database_prefix_override);
       setWebhookDraft('');
       setClearWebhookDb(false);
+      setFeishuLoadFailed(false);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setFeishuSaveError(`保存失败: ${msg}`);
@@ -94,15 +120,122 @@ export default function SettingsPage() {
   };
 
   const sourceLabel =
-    feishu?.webhook_source === 'database'
+    feishu.webhook_source === 'database'
       ? '数据库'
-      : feishu?.webhook_source === 'environment'
+      : feishu.webhook_source === 'environment'
         ? '环境变量'
         : '未配置';
 
   return (
     <div className="space-y-6 max-w-2xl">
       <h2 className="text-xl font-bold">系统设置</h2>
+
+      <section className="bg-gray-900 border border-teal-900/40 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2 mb-1">
+          <MessageSquare size={16} className="text-teal-400" />
+          飞书通知：在此处填写 Webhook 链接
+        </h3>
+        <p className="text-xs text-gray-500 mb-3">
+          侧边栏<strong className="text-gray-400">系统设置</strong>本卡片内粘贴飞书群内自定义机器人的地址并保存即可，一般无需配置 .env。
+        </p>
+
+        {loadingFeishu ? (
+          <p className="text-gray-500 text-sm py-2">加载飞书配置中…</p>
+        ) : (
+          <div className="space-y-3 text-sm">
+            {feishuLoadFailed && (
+              <div className="flex items-center gap-2 text-amber-400/90 text-sm bg-amber-900/15 border border-amber-800/40 rounded p-2">
+                <AlertCircle size={14} />
+                未能拉取当前配置，可直接粘贴链接保存（确认后端已启动且可访问 <code className="text-amber-200/90">/api/bot/feishu-notify</code>）。
+              </div>
+            )}
+            {feishuSaveError && (
+              <div className="flex items-center gap-2 text-red-400 text-sm bg-red-900/20 rounded p-2">
+                <AlertCircle size={14} /> {feishuSaveError}
+              </div>
+            )}
+
+            <div className="text-gray-400">
+              当前生效{' '}
+              <span className="text-gray-200 font-mono text-xs">{feishu.webhook_masked || '—'}</span>
+              <span
+                className={`ml-2 text-xs px-2 py-0.5 rounded ${
+                  feishu.webhook_source === 'database'
+                    ? 'bg-purple-600/25 text-purple-300'
+                    : feishu.webhook_source === 'environment'
+                      ? 'bg-blue-600/25 text-blue-300'
+                      : 'bg-gray-700 text-gray-500'
+                }`}
+              >
+                {sourceLabel}
+              </span>
+            </div>
+
+            <p className="text-xs text-gray-600">
+              本页写入与环境变量<code className="text-gray-400"> FEISHU_WEBHOOK_URL</code>并存时，以<strong>数据库</strong>为准。
+            </p>
+
+            <p className="text-xs text-amber-700/90">
+              Webhook 保存在 SQLite（明文）。请保护好数据库文件与服务器访问权限。
+            </p>
+
+            <label className="block text-gray-300 text-xs font-medium">飞书 Webhook 链接</label>
+            <input
+              type="text"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
+              value={webhookDraft}
+              onChange={(e) => setWebhookDraft(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono"
+            />
+            <p className="text-xs text-gray-500">保存后以脱敏形式显示；更新时请重新粘贴完整链接。</p>
+
+            <label className="flex items-center gap-2 text-gray-400">
+              <input
+                type="checkbox"
+                checked={clearWebhookDb}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setClearWebhookDb(v);
+                  if (v) setWebhookDraft('');
+                }}
+              />
+              清除已保存的 Webhook（改用环境变量）
+            </label>
+
+            <label className="block text-gray-400 text-xs mt-2">
+              消息关键词前缀（机器人启用「自定义关键词」时需一致）
+            </label>
+            <input
+              type="text"
+              placeholder="默认 [WG]"
+              value={keywordDraft}
+              onChange={(e) => setKeywordDraft(e.target.value)}
+              disabled={keywordUseEnvDefault}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm disabled:opacity-50"
+            />
+            <label className="flex items-center gap-2 text-gray-400">
+              <input
+                type="checkbox"
+                checked={keywordUseEnvDefault}
+                onChange={(e) => setKeywordUseEnvDefault(e.target.checked)}
+              />
+              前缀使用环境变量（不在数据库单独保存）
+            </label>
+
+            <button
+              type="button"
+              disabled={feishuSaving}
+              onClick={handleSaveFeishu}
+              className="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 rounded text-sm"
+            >
+              {feishuSaving ? '保存中…' : '保存飞书链接与关键词'}
+            </button>
+          </div>
+        )}
+      </section>
 
       <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
         <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
@@ -116,9 +249,9 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {loading && <p className="text-gray-500 text-sm py-4">加载中...</p>}
+        {loadingAccounts && <p className="text-gray-500 text-sm py-4">加载中...</p>}
 
-        {!loading && accounts.map((a) => (
+        {!loadingAccounts && accounts.map((a) => (
           <div key={a.id} className="flex items-center justify-between py-2 border-b border-gray-800">
             <div>
               <span className="font-medium">{a.name}</span>
@@ -141,7 +274,7 @@ export default function SettingsPage() {
           </div>
         ))}
 
-        {!loading && accounts.length === 0 && !error && (
+        {!loadingAccounts && accounts.length === 0 && !error && (
           <p className="text-gray-600 text-sm py-2">暂无账户，请添加交易所API密钥</p>
         )}
 
@@ -218,104 +351,6 @@ export default function SettingsPage() {
               <button onClick={handleAdd} className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm">保存</button>
               <button onClick={() => { setShowForm(false); setSaveError(''); }} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">取消</button>
             </div>
-          </div>
-        )}
-      </section>
-
-      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
-          <MessageSquare size={16} className="text-teal-400" />
-          飞书通知（Webhook）
-        </h3>
-
-        {!feishu && !loading && (
-          <p className="text-gray-500 text-sm">暂无法加载飞书配置。</p>
-        )}
-
-        {feishu && (
-          <div className="space-y-3 text-sm">
-            {feishuSaveError && (
-              <div className="flex items-center gap-2 text-red-400 text-sm bg-red-900/20 rounded p-2">
-                <AlertCircle size={14} /> {feishuSaveError}
-              </div>
-            )}
-
-            <div className="text-gray-400">
-              当前生效地址{' '}
-              <span className="text-gray-200 font-mono text-xs">{feishu.webhook_masked || '—'}</span>
-              <span
-                className={`ml-2 text-xs px-2 py-0.5 rounded ${
-                  feishu.webhook_source === 'database'
-                    ? 'bg-purple-600/25 text-purple-300'
-                    : feishu.webhook_source === 'environment'
-                      ? 'bg-blue-600/25 text-blue-300'
-                      : 'bg-gray-700 text-gray-500'
-                }`}
-              >
-                {sourceLabel}
-              </span>
-            </div>
-
-            <p className="text-xs text-gray-600">
-              优先级：以下为「写入数据库」的地址与环境变量<code className="text-gray-400"> FEISHU_WEBHOOK_URL</code>{' '}
-              并存时，数据库优先。
-            </p>
-
-            <p className="text-xs text-amber-700/90">
-              Webhook 保存在 SQLite（明文）。请保护好数据库文件与服务器访问权限。
-            </p>
-
-            <label className="block text-gray-400 text-xs">新 Webhook URL（HTTPS）</label>
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder="填写则保存到数据库（脱敏不回显）；不填则沿用当前来源"
-              value={webhookDraft}
-              onChange={(e) => setWebhookDraft(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono"
-            />
-
-            <label className="flex items-center gap-2 text-gray-400">
-              <input
-                type="checkbox"
-                checked={clearWebhookDb}
-                onChange={(e) => {
-                  const v = e.target.checked;
-                  setClearWebhookDb(v);
-                  if (v) setWebhookDraft('');
-                }}
-              />
-              清除数据库里的 Webhook（改回仅使用环境变量）
-            </label>
-
-            <label className="block text-gray-400 text-xs mt-2">
-              消息关键词前缀（飞书自定义机器人安全设置时需要与关键词一致）
-            </label>
-            <input
-              type="text"
-              placeholder="默认 [WG]"
-              value={keywordDraft}
-              onChange={(e) => setKeywordDraft(e.target.value)}
-              disabled={keywordUseEnvDefault}
-              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm disabled:opacity-50"
-            />
-            <label className="flex items-center gap-2 text-gray-400">
-              <input
-                type="checkbox"
-                checked={keywordUseEnvDefault}
-                onChange={(e) => setKeywordUseEnvDefault(e.target.checked)}
-              />
-              前缀使用环境变量（不在数据库单独保存）
-            </label>
-
-            <button
-              type="button"
-              disabled={feishuSaving}
-              onClick={handleSaveFeishu}
-              className="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 rounded text-sm"
-            >
-              {feishuSaving ? '保存中…' : '保存通知设置'}
-            </button>
           </div>
         )}
       </section>

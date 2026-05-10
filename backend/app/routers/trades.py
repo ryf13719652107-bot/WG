@@ -11,6 +11,16 @@ from ..schemas.trade import TradeResponse, TradeListResponse
 router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 
+def _symbol_search_clause(symbol: str | None):
+    """按交易对模糊匹配：输入 ETH 可匹配 ETH/USDT:USDT、ETHUSDT 等。"""
+    s = (symbol or "").strip()
+    if not s:
+        return None
+    esc = s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pat = f"%{esc}%"
+    return Trade.symbol.ilike(pat, escape="\\")
+
+
 @router.get("", response_model=TradeListResponse)
 async def list_trades(
     symbol: str | None = None,
@@ -24,9 +34,10 @@ async def list_trades(
     stmt = select(Trade).order_by(Trade.exit_time.desc())
     count_stmt = select(func.count(Trade.id))
 
-    if symbol:
-        stmt = stmt.where(Trade.symbol == symbol)
-        count_stmt = count_stmt.where(Trade.symbol == symbol)
+    sym_clause = _symbol_search_clause(symbol)
+    if sym_clause is not None:
+        stmt = stmt.where(sym_clause)
+        count_stmt = count_stmt.where(sym_clause)
 
     if side:
         stmt = stmt.where(Trade.side == side)
@@ -71,8 +82,9 @@ async def delete_filtered_trades(
 ):
     """Delete trades matching filters. If no filters provided, deletes ALL."""
     stmt = delete(Trade)
-    if symbol:
-        stmt = stmt.where(Trade.symbol == symbol)
+    sym_clause = _symbol_search_clause(symbol)
+    if sym_clause is not None:
+        stmt = stmt.where(sym_clause)
     if side:
         stmt = stmt.where(Trade.side == side)
     if account_id is not None:

@@ -3,6 +3,7 @@ import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
 import type { Trade } from '../../types';
 import { Download, Trash2, Search, X } from 'lucide-react';
+import { formatCloseReason } from '../../utils/tradeUi';
 
 export default function TradesPage() {
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -19,7 +20,7 @@ export default function TradesPage() {
       limit, offset: page * limit,
       account_id: selectedAccountId ?? undefined,
       side: sideFilter || undefined,
-      symbol: symbolSearch.toUpperCase() || undefined,
+      symbol: symbolSearch.trim() || undefined,
     });
     setTrades(data.trades);
     setTotal(data.total);
@@ -44,7 +45,7 @@ export default function TradesPage() {
     const desc = [symbolSearch && `币种=${symbolSearch}`, sideFilter && `方向=${sideFilter === 'long' ? '多' : '空'}`].filter(Boolean).join(', ');
     if (!confirm(`确定要删除当前筛选的所有交易记录吗？\n筛选条件：${desc || '全部'}\n此操作不可恢复。`)) return;
     await api.deleteFilteredTrades({
-      symbol: symbolSearch.toUpperCase() || undefined,
+      symbol: symbolSearch.trim() || undefined,
       side: sideFilter || undefined,
       account_id: selectedAccountId ?? undefined,
     });
@@ -84,7 +85,7 @@ export default function TradesPage() {
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
           <input
             type="text"
-            placeholder="搜索币种..."
+            placeholder="模糊搜索 ETH、BTC …"
             value={symbolSearch}
             onChange={(e) => setSymbolSearch(e.target.value)}
             className="w-44 bg-gray-800 border border-gray-700 rounded pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
@@ -149,17 +150,13 @@ export default function TradesPage() {
                   <span className={`px-2 py-0.5 rounded text-xs ${
                     t.close_reason === 'take_profit' ? 'bg-green-600/20 text-green-400' :
                     t.close_reason === 'stop_loss' ? 'bg-red-600/20 text-red-400' :
-                    t.close_reason === 'panic_close' ? 'bg-yellow-600/20 text-yellow-400' :
+                    t.close_reason === 'panic_close' || t.close_reason === 'panic_loss' ? 'bg-yellow-600/20 text-yellow-400' :
                     t.close_reason === 'sync' ? 'bg-blue-600/20 text-blue-400' :
                     t.close_reason === 'margin_stop' ? 'bg-orange-600/20 text-orange-400' :
+                    t.close_reason === 'strategy_deleted' || t.close_reason === '策略删除' ? 'bg-slate-600/30 text-slate-300' :
                     'bg-gray-700 text-gray-400'
                   }`}>
-                    {t.close_reason === 'take_profit' ? '止盈' :
-                     t.close_reason === 'stop_loss' ? '止损' :
-                     t.close_reason === 'panic_close' ? '紧急平仓' :
-                     t.close_reason === 'sync' ? '同步平仓' :
-                     t.close_reason === 'margin_stop' ? '保证金止损' :
-                     t.close_reason === 'manual' ? '手动平仓' : t.close_reason}
+                    {formatCloseReason(t.close_reason)}
                   </span>
                 </td>
                 <td className="p-3">

@@ -268,7 +268,7 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     await _flatten_strategy_orders_and_positions(
         strategy,
         db,
-        close_reason="strategy_deleted",
+        close_reason="策略删除",
         use_order_tracker=not was_running,
     )
     await db.delete(strategy)
