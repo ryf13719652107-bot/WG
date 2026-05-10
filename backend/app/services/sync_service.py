@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 _POSITION_SYNC_INTERVAL = 60
 
 
-def _norm_leg_symbol(sym: str) -> str:
-    return (sym or "").replace("/", "").replace(":USDT", "").replace("-SWAP", "").upper()
+def _leg_key(symbol: str, side: str) -> tuple[str, str]:
+    """与前端 normSym、仪表盘、grid_executor 一致，避免 OKX 存 SUI-USDT 与所里 SUIUSDT 对不齐。"""
+    return BaseExchangeService._norm_sym(symbol), (side or "").lower()
 
 
 class PositionSyncService:
@@ -48,27 +49,37 @@ class PositionSyncService:
                 )
                 local_positions = list(result.scalars().all())
 
-                # Build map of exchange positions
+                # Build map of exchange positions（symbol 与全站 _norm_sym 一致）
                 exchange_map: dict[tuple[str, str], dict] = {}
                 for ep in exchange_positions:
-                    contracts = float(ep.get("contracts", 0) or 0)
+                    contracts = BaseExchangeService.position_row_contracts_abs(ep)
                     if contracts <= 0:
                         continue
-                    sym = _norm_leg_symbol(ep.get("symbol") or "")
-                    side = (ep.get("side") or "").lower()
+                    sym = BaseExchangeService._norm_sym(str(ep.get("symbol") or ""))
+                    side = BaseExchangeService.position_row_side_lower(ep)
+                    if side not in ("long", "short"):
+                        continue
                     exchange_map[(sym, side)] = ep
 
                 sync_now = now_beijing()
                 by_leg: dict[tuple[str, str], list[Position]] = defaultdict(list)
                 for lp in local_positions:
-                    sk = (_norm_leg_symbol(lp.symbol), lp.side.lower())
+                    sk = _leg_key(lp.symbol, lp.side)
                     by_leg[sk].append(lp)
 
-                for (sym_key, _), legs in by_leg.items():
-                    if (sym_key, _) in exchange_map:
+                for (sym_key, side_key), legs in by_leg.items():
+                    if (sym_key, side_key) in exchange_map:
                         continue
 
                     exit_price = float(legs[0].mark_price or legs[0].entry_price or 0)
+                    try:
+                        sym0 = legs[0].symbol
+                        tk = await exchange.fetch_ticker(sym0)
+                        last = float(tk.get("last", 0) or tk.get("close", 0) or 0)
+                        if last > 0:
+                            exit_price = last
+                    except Exception as e:
+                        logger.debug("sync exit_price ticker %s: %s", sym_key, e)
                     for lp in legs:
                         pnl = (
                             (exit_price - lp.entry_price) * lp.quantity

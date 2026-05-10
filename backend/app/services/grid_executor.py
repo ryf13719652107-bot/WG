@@ -108,7 +108,21 @@ class GridExecutor:
         """从交易所拉取已成交订单的均价/成交价，用于交易记录 exit_price。"""
         try:
             raw = await exchange.fetch_order(order_id, sym)
-            return float(raw.get("average", 0) or raw.get("price", 0) or 0)
+            avg = float(raw.get("average", 0) or raw.get("price", 0) or 0)
+            if avg > 0:
+                return avg
+            info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+            for key in ("avgPx", "fillPx", "px"):
+                v = info.get(key)
+                if v is None or v == "":
+                    continue
+                try:
+                    px = float(v)
+                    if px > 0:
+                        return px
+                except (TypeError, ValueError):
+                    continue
+            return 0.0
         except Exception as e:
             logger.debug("filled_exit_price fetch_order %s: %s", order_id, e)
             return 0.0
