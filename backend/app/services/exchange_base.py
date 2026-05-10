@@ -128,6 +128,11 @@ class BaseExchangeService(ABC):
         ...
 
     @abstractmethod
+    async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
+        """Cancel an Algo Order (conditional orders like STOP_MARKET)."""
+        ...
+
+    @abstractmethod
     async def close_position(self, symbol: str, side: str) -> dict:
         """Close all positions for symbol+side. Returns order dict."""
 

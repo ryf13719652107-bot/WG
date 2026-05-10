@@ -240,7 +240,7 @@ class GridExecutor:
                         symbol, sl_side, filled_qty, sl_price,
                         reduce_only=True, position_side=position_side,
                     )
-                    sl_order_id = str(sl_order.get("id", ""))
+                    sl_order_id = str(sl_order.get("algoId") or sl_order.get("id", ""))
                     order_tracker.add(
                         sl_order_id, symbol, sl_side, "stop",
                         filled_qty, sl_price, strategy.id, "stop_loss",
@@ -515,10 +515,10 @@ class GridExecutor:
         for o in sl_orders:
             if o.symbol == symbol:
                 try:
-                    await exchange.cancel_order(o.order_id, o.symbol)
-                    logger.debug("Cancelled SL order %s", o.order_id)
+                    await exchange.cancel_algo_order(o.order_id, o.symbol)
+                    logger.debug("Cancelled SL algo order %s", o.order_id)
                 except Exception as e:
-                    logger.debug("Cancel SL order %s: %s", o.order_id, e)
+                    logger.debug("Cancel SL algo order %s: %s", o.order_id, e)
 
     async def _check_stop_loss_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
         """Check if stop loss orders have filled. If so, close all and reopen."""

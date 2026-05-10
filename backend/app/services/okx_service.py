@@ -201,6 +201,10 @@ class OkxService(BaseExchangeService):
             lambda: self.exchange.cancel_order(order_id, self._format_symbol(symbol)),
         )
 
+    async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
+        """OKX uses same cancel endpoint for all orders."""
+        return await self.cancel_order(algo_id, symbol)
+
     async def close_position(self, symbol: str, side: str) -> dict:
         formatted = self._format_symbol(symbol)
         positions = await self.fetch_positions([symbol])

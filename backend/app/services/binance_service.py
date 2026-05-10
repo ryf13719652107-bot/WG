@@ -208,16 +208,19 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a STOP_MARKET order for Binance USDM Futures using private API."""
+        """Create a STOP_MARKET order using Binance Algo Order API (fapi/v1/algoOrder).
+
+        Since 2025-12-09, Binance requires conditional orders to use the algoOrder endpoint.
+        """
         formatted = self._format_symbol(symbol)
         base = formatted.replace("/", "").replace(":USDT", "")
 
         combos = []
         if self.hedge_mode:
-            combos.append({"positionSide": position_side, "reduceOnly": True})
-            combos.append({"reduceOnly": True})
+            combos.append({"positionSide": position_side})
+            combos.append({})
         else:
-            combos.append({"reduceOnly": True})
+            combos.append({})
 
         last_exc = None
         for idx, extra in enumerate(combos):
@@ -225,23 +228,23 @@ class BinanceService(BaseExchangeService):
                 params = {
                     "symbol": base,
                     "side": side.upper(),
-                    "type": "STOP",
+                    "type": "STOP_MARKET",
+                    "algoType": "CONDITIONAL",
                     "quantity": str(amount),
                     "stopPrice": str(stop_price),
-                    "price": str(stop_price),
                     "workingType": "MARK_PRICE",
                     **extra,
                 }
                 order = await retry_with_backoff(
-                    f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
-                    lambda p=params: self.exchange.fapiPrivatePostOrder(p),
+                    f"binance.create_stop_loss_order(algo_combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
+                    lambda p=params: self.exchange.fapiPrivatePostAlgoOrder(p),
                 )
                 return order
             except Exception as e:
                 last_exc = e
                 err_str = str(e)
                 if "-1106" in err_str or "-4061" in err_str or "-4120" in err_str:
-                    logger.debug("Stop loss order combo%d failed: %s, trying next", idx, e)
+                    logger.debug("Stop loss algo order combo%d failed: %s, trying next", idx, e)
                     continue
                 raise
         raise last_exc
@@ -296,6 +299,22 @@ class BinanceService(BaseExchangeService):
         return await retry_with_backoff(
             "binance.cancel_order",
             lambda: self.exchange.cancel_order(order_id, self._format_symbol(symbol)),
+        )
+
+    async def cancel_algo_order(self, algo_id: str, symbol: str) -> dict:
+        """Cancel an Algo Order (conditional orders like STOP_MARKET).
+
+        Uses fapi/v1/algoOrder endpoint.
+        """
+        formatted = self._format_symbol(symbol)
+        base = formatted.replace("/", "").replace(":USDT", "")
+        params = {
+            "algoId": algo_id,
+            "symbol": base,
+        }
+        return await retry_with_backoff(
+            "binance.cancel_algo_order",
+            lambda: self.exchange.fapiPrivateDeleteAlgoOrder(params),
         )
 
     async def close_position(self, symbol: str, side: str) -> dict:
