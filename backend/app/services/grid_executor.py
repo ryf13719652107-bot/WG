@@ -71,14 +71,29 @@ class GridExecutor:
         try:
             oo = await exchange.fetch_open_orders(symbol)
             for row in oo or []:
-                oid = str(row.get("id") or row.get("orderId") or row.get("algoId") or "")
-                if not oid:
-                    continue
-                try:
-                    await exchange.cancel_order(oid, symbol)
-                    n += 1
-                except Exception as e:
-                    logger.debug("purge cancel_order %s: %s", oid, e)
+                algo_raw = row.get("algoId")
+                plain = str(row.get("id") or row.get("orderId") or "").strip()
+                if algo_raw:
+                    aid = str(algo_raw).strip()
+                    try:
+                        await exchange.cancel_algo_order(aid, symbol)
+                        n += 1
+                        continue
+                    except Exception as e:
+                        logger.debug("purge cancel_algo_order %s: %s", aid, e)
+                    if aid and aid != plain:
+                        try:
+                            await exchange.cancel_order(aid, symbol)
+                            n += 1
+                            continue
+                        except Exception as e2:
+                            logger.debug("purge cancel_order(algoId as id) %s: %s", aid, e2)
+                if plain:
+                    try:
+                        await exchange.cancel_order(plain, symbol)
+                        n += 1
+                    except Exception as e:
+                        logger.debug("purge cancel_order %s: %s", plain, e)
         except Exception as e:
             logger.warning("purge fetch_open_orders %s strategy=%d: %s", symbol, strategy_id, e)
 
@@ -584,6 +599,15 @@ class GridExecutor:
                 title="止盈完成 · 自动重开",
                 body_lines=["已按市价重新开首单并挂止盈/加仓/止损（若启用）"],
             )
+            try:
+                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+                if again > 0:
+                    strategy_log_service.info(
+                        strategy.id,
+                        f"重开首单前再次撤销 {symbol} 残留挂单约 {again} 笔，避免与上一轮订单重叠",
+                    )
+            except Exception as e:
+                logger.warning("purge before reopen after TP strategy=%d: %s", strategy.id, e)
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy_log_service.success(strategy.id, f"止盈后续操作成功: {symbol} 策略已停止 (reopen_after_close=否)")
@@ -799,6 +823,15 @@ class GridExecutor:
                 title="止损完成 · 自动重开",
                 body_lines=["市价止损后已重新开首单并挂新单（若启用止损单等）"],
             )
+            try:
+                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+                if again > 0:
+                    strategy_log_service.info(
+                        strategy.id,
+                        f"重开首单前再次撤销 {symbol} 残留挂单约 {again} 笔，避免与上一轮订单重叠",
+                    )
+            except Exception as e:
+                logger.warning("purge before reopen after SL strategy=%d: %s", strategy.id, e)
             await self._open_initial(session, strategy, symbol, exchange, current_price)
         else:
             strategy_log_service.success(strategy.id, f"止损后续操作成功: {symbol} 策略已停止 (reopen_after_close=否)")
@@ -826,6 +859,17 @@ class GridExecutor:
         positions_already_closed: bool = False,
     ):
         """Close all positions for this strategy+symbol via market order. Record trades."""
+        # 先按交易所全量扫单（避免 tracker 与所侧不一致时残留止盈/止损/加仓限价）
+        try:
+            pre_purge = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+            if pre_purge > 0:
+                strategy_log_service.info(
+                    strategy.id,
+                    f"平仓前已撤销 {symbol} 交易所挂单约 {pre_purge} 笔（止盈/止损/加仓等）",
+                )
+        except Exception as e:
+            logger.warning("purge before close_all strategy=%d: %s", strategy.id, e)
+
         # Cancel all pending orders first
         pending = order_tracker.get_active_for_strategy(strategy.id)
         for o in pending:
