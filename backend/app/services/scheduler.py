@@ -157,6 +157,53 @@ class StrategyScheduler:
                 )
                 logger.info("Order watcher started for strategy %d (%s)", s.id, s.symbol)
 
+    async def _try_hydrate_tracker_order_from_db(
+        self, strategy_id: int, symbol: str, order_id: str,
+    ):
+        """WS 先到而内存 tracker 无记录时（如刚重启），用 DB 未平仓行的止盈/加仓单号补登记。"""
+        from .order_tracker import order_tracker
+
+        oid = (order_id or "").strip()
+        if not oid:
+            return None
+        existing = order_tracker.get(oid)
+        if existing:
+            return existing if existing.strategy_id == strategy_id else None
+
+        want = BaseExchangeService._norm_sym(symbol)
+        async with async_session() as session:
+            r = await session.execute(
+                select(Position).where(
+                    Position.strategy_id == strategy_id,
+                    Position.closed_at.is_(None),
+                )
+            )
+            rows = list(r.scalars().all())
+
+        for p in rows:
+            if BaseExchangeService._norm_sym(p.symbol or "") != want:
+                continue
+            purpose = None
+            side_hint = None
+            qty_hint = float(p.quantity or 0)
+            price_hint = 0.0
+            if (p.tp_limit_order_id or "").strip() == oid:
+                purpose = "tp"
+                side_hint = "sell" if p.side == "long" else "buy"
+                price_hint = float(p.take_profit_price or 0) or 0.0
+            elif (p.add_limit_order_id or "").strip() == oid:
+                purpose = "grid_add"
+                side_hint = "buy" if p.side == "long" else "sell"
+                price_hint = float(p.grid_trigger_price or 0) or 0.0
+            else:
+                continue
+            order_tracker.add(
+                oid, symbol, side_hint, "limit",
+                qty_hint, price_hint, strategy_id, purpose,
+            )
+            return order_tracker.get(oid)
+        return None
+
     async def _watch_orders_loop(self, strategy_id: int, exchange, symbol: str):
         """监听订单成交(WebSocket),成交后立即触发策略tick."""
         from .order_tracker import order_tracker, OrderState
@@ -180,25 +227,53 @@ class StrategyScheduler:
                 orders = await ws.watch_orders(ws_symbol)
                 consecutive_errors = 0
                 for raw in (orders if isinstance(orders, list) else [orders]):
-                    oid = str(raw.get("id", "") or "")
+                    info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+                    oid = str(raw.get("id", "") or raw.get("orderId", "") or "").strip()
+                    if not oid and isinstance(info, dict):
+                        oid = str(info.get("ordId") or info.get("algoId") or "").strip()
                     if not oid:
                         continue
                     ws_status = (raw.get("status") or "").lower()
-                    info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
                     if isinstance(info, dict) and not ws_status:
                         ws_status = str(info.get("state") or info.get("ordStatus") or "").lower()
                     filled_w = float(raw.get("filled", 0) or 0)
                     amount_w = float(raw.get("amount", 0) or 0)
+                    if isinstance(info, dict):
+                        try:
+                            acc = float(info.get("accFillSz") or 0)
+                            sz = float(info.get("sz") or 0)
+                            if acc > filled_w:
+                                filled_w = acc
+                            if sz > amount_w:
+                                amount_w = sz
+                        except (TypeError, ValueError):
+                            pass
                     essentially_filled = amount_w > 1e-12 and filled_w >= amount_w * 0.998
-                    is_filled = ws_status in ("closed", "filled") or essentially_filled
+                    is_filled = (
+                        ws_status in ("closed", "filled", "effective")
+                        or essentially_filled
+                    )
                     is_canceled = ws_status in ("canceled", "cancelled") and not essentially_filled
                     if not is_filled and not is_canceled:
                         continue
                     co = order_tracker.get(oid)
+                    if not co:
+                        co = await self._try_hydrate_tracker_order_from_db(strategy_id, symbol, oid)
                     if not co or co.strategy_id != strategy_id:
                         continue
                     co.filled = filled_w or co.filled
                     avg = float(raw.get("average", 0) or 0)
+                    if avg <= 0 and isinstance(info, dict):
+                        for k in ("avgPx", "fillPx"):
+                            v = info.get(k)
+                            if v is None or v == "":
+                                continue
+                            try:
+                                avg = float(v)
+                            except (TypeError, ValueError):
+                                continue
+                            if avg > 0:
+                                break
                     if avg > 0:
                         co.price = avg
                     if is_filled or essentially_filled:

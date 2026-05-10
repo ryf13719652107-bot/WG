@@ -121,6 +121,18 @@ class OrderTracker:
                 filled_done = True
         if isinstance(info, dict) and str(info.get("state", "")).lower() == "filled":
             filled_done = True
+        # OKX：部分响应里 amount/remaining 不全，用 accFillSz 与 sz 判断已完全成交
+        if isinstance(info, dict) and not filled_done:
+            try:
+                acc = float(info.get("accFillSz") or 0)
+                sz = float(info.get("sz") or 0)
+                if sz > 1e-16 and acc >= sz * 0.998:
+                    filled_done = True
+            except (TypeError, ValueError):
+                pass
+            st = str(info.get("state") or "").lower()
+            if st in ("filled", "effective"):
+                filled_done = True
 
         if filled_done:
             co.status = OrderState.FILLED

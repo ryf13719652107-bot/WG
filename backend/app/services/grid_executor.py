@@ -607,15 +607,39 @@ class GridExecutor:
         """Check if TP limit orders have filled. If so, close all and reopen."""
         tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
         filled_orders = order_tracker.get_filled(strategy.id, "tp")
-        all_orders = {o.order_id: o for o in tp_orders + filled_orders}
+        by_id: dict = {o.order_id: o for o in tp_orders + filled_orders}
+
+        # 本地 DB 中的止盈单 ID（服务重启后 order_tracker 为空时仍能轮询所侧）
+        tp_side_hint = "sell" if strategy.direction == "long" else "buy"
+        for p in positions:
+            oid = (p.tp_limit_order_id or "").strip()
+            if not oid or oid in by_id:
+                continue
+            if not GridExecutor._order_symbol_matches(p.symbol or symbol, symbol):
+                continue
+            if not order_tracker.get(oid):
+                order_tracker.add(
+                    oid,
+                    symbol,
+                    tp_side_hint,
+                    "limit",
+                    float(p.quantity or 0),
+                    float(p.take_profit_price or 0) or 0.0,
+                    strategy.id,
+                    "tp",
+                )
+            co = order_tracker.get(oid)
+            if co:
+                by_id[oid] = co
+
         ref_tp = None
-        for o in all_orders.values():
+        for o in by_id.values():
             if not GridExecutor._order_symbol_matches(o.symbol, symbol):
                 continue
             if o.status == OrderState.FILLED:
                 ref_tp = o
                 break
-            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+            updated = await order_tracker.check_order(exchange, o.order_id, symbol)
             if updated and updated.status == OrderState.FILLED:
                 ref_tp = updated
                 break
