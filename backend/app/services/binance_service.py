@@ -198,32 +198,47 @@ class BinanceService(BaseExchangeService):
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
         formatted = self._format_symbol(symbol)
-        return await retry_with_backoff(
-            "binance.create_market_order",
-            lambda: self.exchange.create_order(
-                symbol=formatted,
-                type="market",
-                side=side,
-                amount=amount,
-                params=self._order_params(position_side, reduce_only),
-            ),
-        )
+        params = self._order_params(position_side, reduce_only)
+        try:
+            return await retry_with_backoff(
+                "binance.create_market_order",
+                lambda: self.exchange.create_order(
+                    symbol=formatted, type="market", side=side, amount=amount, params=params,
+                ),
+            )
+        except Exception as e:
+            if "-1106" in str(e) and params:
+                return await retry_with_backoff(
+                    "binance.create_market_order(noHedge)",
+                    lambda: self.exchange.create_order(
+                        symbol=formatted, type="market", side=side, amount=amount,
+                    ),
+                )
+            raise
 
     async def create_limit_order(
         self, symbol: str, side: str, amount: float, price: float,
         reduce_only: bool = False, position_side: str = "LONG",
     ) -> dict:
-        return await retry_with_backoff(
-            "binance.create_limit_order",
-            lambda: self.exchange.create_order(
-                symbol=self._format_symbol(symbol),
-                type="limit",
-                side=side,
-                amount=amount,
-                price=price,
-                params=self._order_params(position_side, reduce_only),
-            ),
-        )
+        params = self._order_params(position_side, reduce_only)
+        try:
+            return await retry_with_backoff(
+                "binance.create_limit_order",
+                lambda: self.exchange.create_order(
+                    symbol=self._format_symbol(symbol),
+                    type="limit", side=side, amount=amount, price=price, params=params,
+                ),
+            )
+        except Exception as e:
+            if "-1106" in str(e) and params:
+                return await retry_with_backoff(
+                    "binance.create_limit_order(noHedge)",
+                    lambda: self.exchange.create_order(
+                        symbol=self._format_symbol(symbol),
+                        type="limit", side=side, amount=amount, price=price,
+                    ),
+                )
+            raise
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
         return await retry_with_backoff(
