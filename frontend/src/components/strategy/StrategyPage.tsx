@@ -50,7 +50,12 @@ export default function StrategyPage() {
     if (!confirm('确认紧急平仓？将以市价单平掉该策略对应账户的所有交易所持仓。')) return;
     try {
       const result = await api.panicCloseStrategy(id);
-      alert(`平仓完成: ${result.closed} 成功, ${result.failed || 0} 失败`);
+      const failedList = (result.results || [])
+        .filter((r: any) => r.status === 'failed')
+        .map((r: any) => `${r.symbol}(${r.side}): ${r.error}`)
+        .join('; ');
+      const msg = `平仓完成: ${result.closed} 成功, ${result.failed || 0} 失败`;
+      alert(failedList ? msg + '\n失败详情: ' + failedList : msg);
     } catch (e: any) {
       alert('平仓失败: ' + (e.message || e));
     }

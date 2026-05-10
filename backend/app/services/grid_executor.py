@@ -202,10 +202,16 @@ class GridExecutor:
             result = await self._place_grid_add(session, strategy, symbol, exchange, pos, gl)
             if result:
                 placed += 1
-        strategy_log_service.success(
-            strategy.id,
-            f"挂单加仓: {placed}/{total} 层已挂单 (共{total}层加仓限价单, max_layers={strategy.max_layers})",
-        )
+        if placed == total:
+            strategy_log_service.success(
+                strategy.id,
+                f"挂单加仓: {placed}/{total} 层已挂单",
+            )
+        else:
+            strategy_log_service.warning(
+                strategy.id,
+                f"挂单加仓: {placed}/{total} 层已挂单 (失败{total-placed}层可能因交易所订单/持仓限制, 建议降低max_layers)",
+            )
 
         logger.info(
             "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f grid_placed=%d/%d",
@@ -265,8 +271,15 @@ class GridExecutor:
             )
             return order_id
         except Exception as e:
+            err_str = str(e)
             logger.error("Failed to place grid add order for %s lv=%d: %s", symbol, grid_level.level, e)
-            strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: {e}")
+            if "-2027" in err_str:
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"挂单加仓 Lv{grid_level.level} 被交易所拒绝(持仓/订单超限,可尝试降低加仓层数)",
+                )
+            else:
+                strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: {e}")
             return None
 
     async def _check_tp_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
