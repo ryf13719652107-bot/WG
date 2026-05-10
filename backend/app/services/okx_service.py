@@ -176,6 +176,25 @@ class OkxService(BaseExchangeService):
             ),
         )
 
+    async def create_stop_loss_order(
+        self, symbol: str, side: str, amount: float, stop_price: float,
+        reduce_only: bool = True, position_side: str = "LONG",
+    ) -> dict:
+        """Create a stop-loss market order for OKX."""
+        params = self._order_params(position_side, reduce_only)
+        params["stopPrice"] = stop_price
+        params["triggerPrice"] = stop_price
+        return await retry_with_backoff(
+            "okx.create_stop_loss_order",
+            lambda: self.exchange.create_order(
+                symbol=self._format_symbol(symbol),
+                type="market",
+                side=side,
+                amount=amount,
+                params=params,
+            ),
+        )
+
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
         return await retry_with_backoff(
             "okx.cancel_order",

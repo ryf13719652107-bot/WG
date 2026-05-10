@@ -204,6 +204,42 @@ class BinanceService(BaseExchangeService):
             reduce_only, position_side, "limit",
         )
 
+    async def create_stop_loss_order(
+        self, symbol: str, side: str, amount: float, stop_price: float,
+        reduce_only: bool = True, position_side: str = "LONG",
+    ) -> dict:
+        """Create a STOP_MARKET order for Binance USDM Futures."""
+        formatted = self._format_symbol(symbol)
+        combos = []
+        if self.hedge_mode:
+            combos.append({"positionSide": position_side, "stopPrice": stop_price})
+            combos.append({"stopPrice": stop_price})
+        else:
+            combos.append({"stopPrice": stop_price})
+
+        last_exc = None
+        for idx, params in enumerate(combos):
+            try:
+                extra = {
+                    "type": "STOP_MARKET",
+                    "side": side,
+                    "amount": amount,
+                    "params": params,
+                }
+                tag = f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
+                return await retry_with_backoff(
+                    tag,
+                    lambda s=formatted, e=extra: self.exchange.create_order(symbol=s, **e),
+                )
+            except Exception as e:
+                last_exc = e
+                err_str = str(e)
+                if "-1106" in err_str or "-4061" in err_str:
+                    logger.debug("Stop loss order combo%d (-1106/-4061), trying next", idx)
+                    continue
+                raise
+        raise last_exc
+
     async def _create_order_with_fallback(
         self, formatted_symbol: str, order_type: str,
         side: str, amount: float, price: float | None,

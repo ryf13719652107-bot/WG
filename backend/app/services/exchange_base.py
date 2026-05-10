@@ -116,6 +116,14 @@ class BaseExchangeService(ABC):
         ...
 
     @abstractmethod
+    async def create_stop_loss_order(
+        self, symbol: str, side: str, amount: float, stop_price: float,
+        reduce_only: bool = True, position_side: str = "LONG",
+    ) -> dict:
+        """Create a stop-loss market order that triggers at stop_price."""
+        ...
+
+    @abstractmethod
     async def cancel_order(self, order_id: str, symbol: str) -> dict:
         ...
 

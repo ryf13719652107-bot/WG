@@ -17,14 +17,11 @@ class GridExecutor:
     """Per-symbol grid strategy lifecycle executor.
 
     Flow:
-    1. No position → market open initial + place TP limit + place first grid add limit
-    2. Has positions → check TP fills / grid add fills / stop loss
+    1. No position → market open initial + place TP limit + place grid add limits + place SL order
+    2. Has positions → check TP fills / grid add fills / stop loss fills
     3. TP fill → close all + reopen initial
-    4. Grid add fill → update avg entry + replace TP + place next grid add
-    5. Stop loss:
-       - SOFT (80% threshold): alert only, continue trading
-       - HARD (100% threshold): close all + reopen initial
-       - PANIC (single layer >50% loss): close all + reopen initial
+    4. Grid add fill → update avg entry + replace TP + update SL
+    5. SL fill → close all + reopen initial
     """
 
     MAX_CONSECUTIVE_FAILURES = 3
@@ -55,11 +52,26 @@ class GridExecutor:
             return round(qty, 6)
         return round(qty, 8)
 
+    @staticmethod
+    def _calculate_stop_loss_price(avg_entry: float, total_qty: float, loss_u: float, side: str) -> float:
+        """Calculate stop loss price based on max loss in USDT.
+
+        For long: sl_price = avg_entry - (loss_u / total_qty)
+        For short: sl_price = avg_entry + (loss_u / total_qty)
+        """
+        if total_qty <= 0 or loss_u <= 0:
+            return 0.0
+        price_offset = loss_u / total_qty
+        if side == "long":
+            sl_price = avg_entry - price_offset
+        else:
+            sl_price = avg_entry + price_offset
+        return round(sl_price, 8)
+
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
     ) -> None:
         """Main per-symbol processing entry point."""
-        # Check existing open positions
         from sqlalchemy import select
         stmt = select(Position).where(
             Position.strategy_id == strategy.id,
@@ -73,7 +85,6 @@ class GridExecutor:
             await self._open_initial(session, strategy, symbol, exchange, current_price)
             return
 
-        # Update mark prices and calculate cumulative unrealized PnL
         cumulative_u = 0.0
         for pos in open_positions:
             pos.mark_price = current_price
@@ -92,22 +103,19 @@ class GridExecutor:
                 f"浮盈监控: 累计 {cumulative_u:.2f}U",
             )
 
-        # Check TP order fills
-        tp_filled = await self._check_tp_fills(session, strategy, symbol, exchange, open_positions, current_price)
-        if tp_filled:
-            return  # positions were closed and reopened
-
-        # Check grid add order fills
-        add_filled = await self._check_grid_add_fills(session, strategy, symbol, exchange, open_positions, current_price)
-        if add_filled:
-            return  # positions updated
-
-        # Check cumulative stop loss
-        sl_triggered = await self._check_stop_loss(session, strategy, symbol, exchange, open_positions, current_price, cumulative_u)
-        if sl_triggered:
+        sl_filled = await self._check_stop_loss_fills(session, strategy, symbol, exchange, open_positions, current_price)
+        if sl_filled:
             return
 
-        await session.commit()  # 持久化mark_price/unrealized_pnl
+        tp_filled = await self._check_tp_fills(session, strategy, symbol, exchange, open_positions, current_price)
+        if tp_filled:
+            return
+
+        add_filled = await self._check_grid_add_fills(session, strategy, symbol, exchange, open_positions, current_price)
+        if add_filled:
+            return
+
+        await session.commit()
 
     async def _open_initial(self, session, strategy, symbol, exchange, current_price):
         """Open initial position at market + place TP limit + first grid add limit."""
@@ -223,7 +231,29 @@ class GridExecutor:
 
         await session.commit()
 
-        # 3. Place all grid add limit orders
+        if self.engine.loss_threshold > 0:
+            sl_price = self._calculate_stop_loss_price(entry_price, filled_qty, self.engine.loss_threshold, strategy.direction)
+            sl_side = "sell" if strategy.direction == "long" else "buy"
+            if sl_price > 0 and self._check_order_qty(filled_qty, symbol):
+                try:
+                    sl_order = await exchange.create_stop_loss_order(
+                        symbol, sl_side, filled_qty, sl_price,
+                        reduce_only=True, position_side=position_side,
+                    )
+                    sl_order_id = str(sl_order.get("id", ""))
+                    order_tracker.add(
+                        sl_order_id, symbol, sl_side, "stop",
+                        filled_qty, sl_price, strategy.id, "stop_loss",
+                    )
+                    strategy_log_service.success(
+                        strategy.id,
+                        f"挂单止损: 数量={filled_qty:.4f} 止损价={sl_price:.4f} (最大亏损{self.engine.loss_threshold}U)",
+                    )
+                    logger.info("Stop loss order placed: %s qty=%.4f sl_price=%.4f", symbol, filled_qty, sl_price)
+                except Exception as e:
+                    logger.error("Failed to place SL order for %s %s: %s", strategy.id, symbol, e)
+                    strategy_log_service.warning(strategy.id, f"挂单止损失败: {e} (将使用浮亏监控止损)")
+
         grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
         placed = 0
         total = len(grid_levels)
@@ -440,6 +470,30 @@ class GridExecutor:
             else:
                 strategy_log_service.warning(strategy.id, f"止盈数量超限({total_qty:.2f}),跳过挂单,请手动止盈")
 
+            if self.engine.loss_threshold > 0:
+                await self._cancel_sl_orders(session, strategy, symbol, exchange)
+                sl_price = self._calculate_stop_loss_price(avg_entry, total_qty, self.engine.loss_threshold, side)
+                sl_side = "sell" if side == "long" else "buy"
+                if sl_price > 0 and self._check_order_qty(total_qty, symbol):
+                    try:
+                        sl_order = await exchange.create_stop_loss_order(
+                            symbol, sl_side, total_qty, sl_price,
+                            reduce_only=True, position_side=position_side,
+                        )
+                        sl_order_id = str(sl_order.get("id", ""))
+                        order_tracker.add(
+                            sl_order_id, symbol, sl_side, "stop",
+                            total_qty, sl_price, strategy.id, "stop_loss",
+                        )
+                        strategy_log_service.success(
+                            strategy.id,
+                            f"更新止损: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止损价={sl_price:.4f}",
+                        )
+                        logger.info("Stop loss updated after grid add: %s qty=%.4f sl_price=%.4f", symbol, total_qty, sl_price)
+                    except Exception as e:
+                        logger.error("Failed to update SL after grid add: %s", e)
+                        strategy_log_service.warning(strategy.id, f"更新止损失败: {e}")
+
             await session.commit()
             # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层
 
@@ -454,6 +508,59 @@ class GridExecutor:
                     await exchange.cancel_order(o.order_id, o.symbol)
                 except Exception as e:
                     logger.debug("Cancel TP order %s: %s", o.order_id, e)
+
+    async def _cancel_sl_orders(self, session, strategy, symbol, exchange):
+        """Cancel all existing stop loss orders for this strategy+symbol."""
+        sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
+        for o in sl_orders:
+            if o.symbol == symbol:
+                try:
+                    await exchange.cancel_order(o.order_id, o.symbol)
+                    logger.debug("Cancelled SL order %s", o.order_id)
+                except Exception as e:
+                    logger.debug("Cancel SL order %s: %s", o.order_id, e)
+
+    async def _check_stop_loss_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
+        """Check if stop loss orders have filled. If so, close all and reopen."""
+        if self.engine.loss_threshold <= 0:
+            return False
+
+        sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
+        filled_orders = order_tracker.get_filled(strategy.id, "stop_loss")
+        all_orders = {o.order_id: o for o in sl_orders + filled_orders}
+        filled = False
+        for o in all_orders.values():
+            if o.symbol != symbol:
+                continue
+            if o.status == OrderState.FILLED:
+                filled = True
+                break
+            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol)
+            if updated and updated.status == OrderState.FILLED:
+                filled = True
+                break
+
+        if not filled:
+            return False
+
+        strategy_log_service.success(
+            strategy.id,
+            f"止损触发: {symbol} 当前价={current_price:.4f} 平仓+重开",
+        )
+
+        await self._close_all(session, strategy, symbol, exchange, positions, current_price, "stop_loss")
+
+        await session.refresh(strategy)
+
+        if strategy.reopen_after_close and strategy.status == "running":
+            strategy_log_service.success(strategy.id, f"止损成功,自动重开: {symbol}")
+            await self._open_initial(session, strategy, symbol, exchange, current_price)
+        else:
+            strategy_log_service.success(strategy.id, f"止损成功,策略停止: {symbol}")
+            strategy.status = "stopped"
+            await session.commit()
+
+        return True
 
     async def _check_stop_loss(self, session, strategy, symbol, exchange, positions, current_price, cumulative_u: float) -> bool:
         """Check per-strategy cumulative unrealized loss with multi-level stop loss.
