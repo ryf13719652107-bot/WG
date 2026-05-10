@@ -208,33 +208,30 @@ class BinanceService(BaseExchangeService):
         self, symbol: str, side: str, amount: float, stop_price: float,
         reduce_only: bool = True, position_side: str = "LONG",
     ) -> dict:
-        """Create a STOP_MARKET order for Binance USDM Futures using private API."""
+        """Create a STOP_MARKET order for Binance USDM Futures."""
         formatted = self._format_symbol(symbol)
-        base = formatted.replace("/", "").replace(":USDT", "")
 
         combos = []
         if self.hedge_mode:
-            combos.append({"positionSide": position_side})
-            combos.append({})
+            combos.append({"positionSide": position_side, "reduceOnly": True, "stopPrice": stop_price})
+            combos.append({"reduceOnly": True, "stopPrice": stop_price})
         else:
-            combos.append({})
+            combos.append({"reduceOnly": True, "stopPrice": stop_price})
 
         last_exc = None
-        for idx, extra_params in enumerate(combos):
+        for idx, params in enumerate(combos):
             try:
-                params = {
-                    "symbol": base,
-                    "side": side.upper(),
-                    "type": "STOP_MARKET",
-                    "quantity": str(amount),
-                    "stopPrice": str(stop_price),
-                    **extra_params,
-                }
-                tag = f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order"
-                return await retry_with_backoff(
-                    tag,
-                    lambda p=params: self.exchange.fapiPrivatePostOrder(p),
+                order = await retry_with_backoff(
+                    f"binance.create_stop_loss_order(combo{idx})" if idx > 0 else "binance.create_stop_loss_order",
+                    lambda p=params: self.exchange.create_order(
+                        symbol=formatted,
+                        type="stop_market",
+                        side=side,
+                        amount=amount,
+                        params=p,
+                    ),
                 )
+                return order
             except Exception as e:
                 last_exc = e
                 err_str = str(e)
