@@ -21,7 +21,7 @@ from .health_monitor import health_monitor
 
 logger = logging.getLogger(__name__)
 
-_STRATEGY_TICK_SECONDS = 30
+_STRATEGY_TICK_SECONDS = 5
 _STRATEGY_SEMAPHORE = asyncio.Semaphore(100)
 
 

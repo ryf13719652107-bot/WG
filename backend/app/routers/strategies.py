@@ -142,11 +142,12 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{strategy_id}/panic-close")
 async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
-    """Emergency close: close ALL exchange positions for this strategy's account at market price."""
+    """Emergency close: 直接市价平仓，不等待撤单."""
     from ..models.account import Account
     from ..models.trade import Trade
     from ..config import now_beijing
     import logging
+    import asyncio
 
     strategy = await db.get(Strategy, strategy_id)
     if not strategy:
@@ -156,28 +157,24 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
     if not exchange:
         raise HTTPException(status_code=404, detail="Exchange service not available")
 
-    # Cancel all pending orders for this strategy before closing
+    # 先快速清除内存追踪
     from ..services.order_tracker import order_tracker
-    active_orders = order_tracker.get_active_for_strategy(strategy_id)
-    for o in active_orders:
-        try:
-            await exchange.cancel_order(o.order_id, o.symbol)
-        except Exception:
-            pass
     order_tracker.clear_strategy(strategy_id)
 
-    # Also cancel exchange open orders for this symbol
-    try:
-        open_orders = await exchange.fetch_open_orders(strategy.symbol)
-        for oo in open_orders:
-            oid = str(oo.get("id", ""))
-            if oid:
-                try:
-                    await exchange.cancel_order(oid, strategy.symbol)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    # 异步取消挂单（不等待结果，让平仓先走）
+    async def _cancel_bg():
+        try:
+            open_orders = await exchange.fetch_open_orders(strategy.symbol)
+            tasks = []
+            for oo in (open_orders or []):
+                oid = str(oo.get("id", ""))
+                if oid:
+                    tasks.append(exchange.cancel_order(oid, strategy.symbol))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            pass
+    asyncio.create_task(_cancel_bg())
 
     try:
         raw_positions = await exchange.fetch_positions()
