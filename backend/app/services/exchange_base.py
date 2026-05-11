@@ -98,6 +98,61 @@ class BaseExchangeService(ABC):
         """持仓张数/数量；部分所对空头为负 contracts，统一取绝对值。"""
         return abs(float(pos.get("contracts", 0) or 0))
 
+    @staticmethod
+    def open_order_leg_side_lower(order: dict) -> str:
+        """挂单所属持仓腿 long/short（双向模式下 info 或顶层常有 positionSide / posSide）。"""
+        info = order.get("info") or {}
+        if isinstance(info, dict):
+            raw = str(info.get("posSide") or info.get("positionSide") or "").strip()
+            if raw.upper() in ("LONG", "SHORT"):
+                return "long" if raw.upper() == "LONG" else "short"
+            rl = raw.lower()
+            if rl in ("long", "short"):
+                return rl
+        for key in ("positionSide", "posSide"):
+            raw = str(order.get(key) or "").strip()
+            if not raw:
+                continue
+            if raw.upper() in ("LONG", "SHORT"):
+                return "long" if raw.upper() == "LONG" else "short"
+            rl = raw.lower()
+            if rl in ("long", "short"):
+                return rl
+        return ""
+
+    @staticmethod
+    def open_order_matches_strategy_leg(order: dict, direction_lower: str, hedge_mode: bool) -> bool:
+        """双向持仓下同币种对向策略并行时，仅匹配本报单方向的挂单，避免误撤对方挂单。"""
+        if not hedge_mode:
+            return True
+        want = (direction_lower or "").strip().lower()
+        if want not in ("long", "short"):
+            return True
+        leg = BaseExchangeService.open_order_leg_side_lower(order)
+        if not leg:
+            return False
+        return leg == want
+
+    @staticmethod
+    def open_order_matches_strategy_symbol(order: dict, strategy_symbol: str) -> bool:
+        """挂单是否属于策略运行的合约（防御：接口偶发混入其它交易对时不撤）。"""
+        osym = str(order.get("symbol") or "").strip()
+        if not osym:
+            return True
+        return BaseExchangeService._norm_sym(osym) == BaseExchangeService._norm_sym(strategy_symbol)
+
+    @staticmethod
+    def open_order_matches_strategy_scope(
+        order: dict,
+        strategy_symbol: str,
+        direction_lower: str,
+        hedge_mode: bool,
+    ) -> bool:
+        """仅撤销当前策略合约 + 同持仓方向的交易所挂单（币种 ∩ 方向）。"""
+        if not BaseExchangeService.open_order_matches_strategy_symbol(order, strategy_symbol):
+            return False
+        return BaseExchangeService.open_order_matches_strategy_leg(order, direction_lower, hedge_mode)
+
     # ---- Market Data (Public) ----
 
     @abstractmethod

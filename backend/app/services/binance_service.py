@@ -382,12 +382,20 @@ class BinanceService(BaseExchangeService):
             return inner if isinstance(inner, list) else []
         return []
 
-    async def cancel_all_open_algo_orders(self, symbol: str) -> int:
-        """Cancel every open USD-M conditional (algo) order for this raw symbol."""
+    async def cancel_all_open_algo_orders(
+        self, symbol: str, position_side_lower: str | None = None,
+    ) -> int:
+        """Cancel open USD-M conditional (algo) orders for this symbol; optional leg filter (hedge)."""
         rows = await self.fetch_open_algo_orders(symbol)
+        filt = (position_side_lower or "").strip().lower()
+        leg_filter = filt if filt in ("long", "short") else None
+        hedge = self.hedge_mode
+        dir_scope = leg_filter if leg_filter is not None else ""
         n = 0
         tasks = []
         for row in rows:
+            if not BaseExchangeService.open_order_matches_strategy_scope(row, symbol, dir_scope, hedge):
+                continue
             aid = row.get("algoId")
             if aid is None:
                 continue

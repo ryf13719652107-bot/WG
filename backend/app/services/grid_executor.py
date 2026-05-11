@@ -58,19 +58,26 @@ class GridExecutor:
             return round(qty, 6)
         return round(qty, 8)
 
-    async def _purge_exchange_open_orders(self, exchange, symbol: str, strategy_id: int) -> int:
-        """止盈/止损等平仓记账后：扫尾撤销该交易对在交易所可见的全部挂单（普通+算法/触发），再挂新单不撞单。"""
+    async def _purge_exchange_open_orders(
+        self, exchange, symbol: str, strategy_id: int, direction: str,
+    ) -> int:
+        """止盈/止损等平仓记账后：扫尾撤销该策略持仓腿在该交易对上的挂单（双向下同币种对向策略互不撤单）。"""
         n = 0
+        hedge = getattr(exchange, "hedge_mode", True)
+        dir_low = (direction or "").strip().lower()
         ex_id = getattr(exchange, "exchange_id", "") or ""
+        pos_filter = dir_low if hedge else None
         if ex_id == "okx" and hasattr(exchange, "cancel_all_pending_orders_for_symbol"):
             try:
-                n += await exchange.cancel_all_pending_orders_for_symbol(symbol)
+                n += await exchange.cancel_all_pending_orders_for_symbol(symbol, pos_filter)
             except Exception as e:
                 logger.warning("purge OKX bulk %s strategy=%d: %s", symbol, strategy_id, e)
 
         try:
             oo = await exchange.fetch_open_orders(symbol)
             for row in oo or []:
+                if not BaseExchangeService.open_order_matches_strategy_scope(row, symbol, dir_low, hedge):
+                    continue
                 algo_raw = row.get("algoId")
                 plain = str(row.get("id") or row.get("orderId") or "").strip()
                 if algo_raw:
@@ -99,7 +106,7 @@ class GridExecutor:
 
         if hasattr(exchange, "cancel_all_open_algo_orders"):
             try:
-                n += await exchange.cancel_all_open_algo_orders(symbol)
+                n += await exchange.cancel_all_open_algo_orders(symbol, pos_filter)
             except Exception as e:
                 logger.debug("purge cancel_all_open_algo_orders %s: %s", symbol, e)
         return n
@@ -685,7 +692,7 @@ class GridExecutor:
                 body_lines=["已按市价重新开首单并挂止盈/加仓/止损（若启用）"],
             )
             try:
-                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
                 if again > 0:
                     strategy_log_service.info(
                         strategy.id,
@@ -912,7 +919,7 @@ class GridExecutor:
                 body_lines=["市价止损后已重新开首单并挂新单（若启用止损单等）"],
             )
             try:
-                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
                 if again > 0:
                     strategy_log_service.info(
                         strategy.id,
@@ -949,7 +956,7 @@ class GridExecutor:
         """Close all positions for this strategy+symbol via market order. Record trades."""
         # 先按交易所全量扫单（避免 tracker 与所侧不一致时残留止盈/止损/加仓限价）
         try:
-            pre_purge = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+            pre_purge = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
             if pre_purge > 0:
                 strategy_log_service.info(
                     strategy.id,
@@ -1048,7 +1055,7 @@ class GridExecutor:
             )
         order_tracker.clear_strategy(strategy.id)
         try:
-            purged = await self._purge_exchange_open_orders(exchange, symbol, strategy.id)
+            purged = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
             if purged > 0:
                 strategy_log_service.info(
                     strategy.id,

@@ -52,6 +52,10 @@ async def _flatten_strategy_orders_and_positions(
         logging.error("_flatten_strategy: no exchange strategy=%d", strategy_id)
         return False, 0.0, 0.0
 
+    hedge = getattr(exchange, "hedge_mode", True)
+    dir_low = direction.lower()
+    pos_filter = dir_low if hedge else None
+
     cancel_tasks: list = []
 
     if use_order_tracker:
@@ -73,7 +77,7 @@ async def _flatten_strategy_orders_and_positions(
         exchange, "cancel_all_pending_orders_for_symbol"
     ):
         try:
-            n_bulk = await exchange.cancel_all_pending_orders_for_symbol(symbol)
+            n_bulk = await exchange.cancel_all_pending_orders_for_symbol(symbol, pos_filter)
             if n_bulk:
                 logging.info(
                     "_flatten_strategy: OKX cancelled %d pending order ops strategy=%d",
@@ -87,7 +91,9 @@ async def _flatten_strategy_orders_and_positions(
         oo_list = await exchange.fetch_open_orders(symbol)
         oo_cancel = []
         for oo in oo_list or []:
-            oid = str(oo.get("id") or oo.get("orderId") or "")
+            if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
+                continue
+            oid = str(oo.get("id") or oo.get("orderId") or oo.get("algoId") or "").strip()
             if oid:
                 oo_cancel.append(exchange.cancel_order(oid, symbol))
         if oo_cancel:
@@ -97,7 +103,7 @@ async def _flatten_strategy_orders_and_positions(
 
     if hasattr(exchange, "cancel_all_open_algo_orders"):
         try:
-            n = await exchange.cancel_all_open_algo_orders(symbol)
+            n = await exchange.cancel_all_open_algo_orders(symbol, pos_filter)
             if n:
                 logging.info("_flatten_strategy: cancelled %d open algo orders strategy=%d", n, strategy_id)
         except Exception as e:

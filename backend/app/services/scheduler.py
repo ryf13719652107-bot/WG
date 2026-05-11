@@ -442,16 +442,22 @@ class StrategyScheduler:
             if exchange:
                 try:
                     ex_id = getattr(exchange, "exchange_id", "") or ""
+                    hedge = getattr(exchange, "hedge_mode", True)
+                    dir_low = (strategy.direction or "").strip().lower()
+                    pos_filter = dir_low if hedge else None
+
                     if ex_id == "okx" and hasattr(exchange, "cancel_all_pending_orders_for_symbol"):
                         try:
-                            await exchange.cancel_all_pending_orders_for_symbol(symbol)
+                            await exchange.cancel_all_pending_orders_for_symbol(symbol, pos_filter)
                         except Exception as e:
                             logger.warning("Strategy %d stop: OKX cancel_all_pending: %s", strategy_id, e)
 
                     open_orders = await exchange.fetch_open_orders(symbol)
                     cancel_tasks = []
                     for oo in (open_orders or []):
-                        oid = str(oo.get("id", ""))
+                        if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
+                            continue
+                        oid = str(oo.get("id") or oo.get("orderId") or oo.get("algoId") or "").strip()
                         if oid:
                             cancel_tasks.append(exchange.cancel_order(oid, symbol))
                     if cancel_tasks:
@@ -461,7 +467,7 @@ class StrategyScheduler:
 
                     if hasattr(exchange, "cancel_all_open_algo_orders"):
                         try:
-                            n_algo = await exchange.cancel_all_open_algo_orders(symbol)
+                            n_algo = await exchange.cancel_all_open_algo_orders(symbol, pos_filter)
                             if n_algo:
                                 logger.info("Strategy %d stopped: cancelled %d open algo orders", strategy_id, n_algo)
                         except Exception as e:

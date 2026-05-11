@@ -335,21 +335,40 @@ class OkxService(BaseExchangeService):
             reduce_only, position_side, "stop_loss", extra,
         )
 
-    async def cancel_all_pending_orders_for_symbol(self, symbol: str) -> int:
-        """撤销该合约下全部挂单：ccxt 一键撤单 + 扫尾（含 OKX 触发/计划单，默认 fetch_open_orders 拿不到）。"""
+    async def cancel_all_pending_orders_for_symbol(
+        self, symbol: str, position_side_lower: str | None = None,
+    ) -> int:
+        """撤销该合约下挂单；可选仅撤销某一持仓腿（双向模式下同币种对向策略并行）。
+
+        position_side_lower 为 ``long`` / ``short`` 时不再调用交易所一键全撤，以免误杀另一腿。
+        """
         formatted = self._format_symbol(symbol)
         n = 0
-        try:
-            r = await retry_with_backoff(
-                "okx.cancel_all_orders",
-                lambda: self.exchange.cancel_all_orders(formatted),
-            )
-            if isinstance(r, list):
-                n += len(r)
-            elif r is not None:
-                n += 1
-        except Exception as e:
-            logger.warning("OKX cancel_all_orders(%s): %s", symbol, e)
+        filt = (position_side_lower or "").strip().lower()
+        leg_filter = filt if filt in ("long", "short") else None
+
+        def row_matches(row: dict) -> bool:
+            if not BaseExchangeService.open_order_matches_strategy_symbol(row, symbol):
+                return False
+            if leg_filter is None:
+                return True
+            leg = BaseExchangeService.open_order_leg_side_lower(row)
+            if not leg:
+                return False
+            return leg == leg_filter
+
+        if leg_filter is None:
+            try:
+                r = await retry_with_backoff(
+                    "okx.cancel_all_orders",
+                    lambda: self.exchange.cancel_all_orders(formatted),
+                )
+                if isinstance(r, list):
+                    n += len(r)
+                elif r is not None:
+                    n += 1
+            except Exception as e:
+                logger.warning("OKX cancel_all_orders(%s): %s", symbol, e)
 
         for use_stop in (False, True):
             p: dict = {"stop": True} if use_stop else {}
@@ -362,6 +381,8 @@ class OkxService(BaseExchangeService):
                 logger.debug("OKX fetch_open_orders sweep stop=%s: %s", use_stop, e)
                 continue
             for row in rows or []:
+                if not row_matches(row):
+                    continue
                 oid = str(row.get("id") or row.get("orderId") or row.get("algoId") or "")
                 if not oid:
                     continue

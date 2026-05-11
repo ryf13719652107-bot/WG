@@ -24,7 +24,6 @@ export default function SettingsPage() {
   const [webhookDraft, setWebhookDraft] = useState('');
   const [keywordDraft, setKeywordDraft] = useState('');
   const [keywordUseEnvDefault, setKeywordUseEnvDefault] = useState(false);
-  const [clearWebhookDb, setClearWebhookDb] = useState(false);
   const [feishuSaveError, setFeishuSaveError] = useState('');
   const [feishuSaving, setFeishuSaving] = useState(false);
 
@@ -63,7 +62,6 @@ export default function SettingsPage() {
       setFeishuLoadFailed(true);
     }
     setWebhookDraft('');
-    setClearWebhookDb(false);
     setFeishuSaveError('');
     setLoadingFeishu(false);
   };
@@ -123,8 +121,7 @@ export default function SettingsPage() {
     setFeishuSaveError('');
     try {
       const body: Parameters<typeof api.updateFeishuNotify>[0] = {};
-      if (clearWebhookDb) body.webhook_url = '';
-      else if (webhookDraft.trim()) body.webhook_url = webhookDraft.trim();
+      if (webhookDraft.trim()) body.webhook_url = webhookDraft.trim();
       if (keywordUseEnvDefault) body.keyword_prefix_use_env_default = true;
       else body.keyword_prefix = keywordDraft;
       const updated = await api.updateFeishuNotify(body);
@@ -132,11 +129,38 @@ export default function SettingsPage() {
       setKeywordDraft(updated.keyword_prefix);
       setKeywordUseEnvDefault(!updated.has_database_prefix_override);
       setWebhookDraft('');
-      setClearWebhookDb(false);
       setFeishuLoadFailed(false);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setFeishuSaveError(`保存失败: ${msg}`);
+    }
+    setFeishuSaving(false);
+  };
+
+  const handleDeleteFeishuWebhook = async () => {
+    if (!feishu.has_database_webhook_override) {
+      setFeishuSaveError(
+        '数据库里没有保存过 Webhook（当前可能仅用环境变量 FEISHU_WEBHOOK_URL）。无需点此删除；若要停用请改部署环境。',
+      );
+      return;
+    }
+    if (
+      !confirm(
+        '确定删除数据库中保存的飞书 Webhook？\n若服务器仍配置了环境变量 FEISHU_WEBHOOK_URL，推送会继续使用该地址。',
+      )
+    ) {
+      return;
+    }
+    setFeishuSaving(true);
+    setFeishuSaveError('');
+    try {
+      const updated = await api.updateFeishuNotify({ webhook_url: '' });
+      setFeishu(updated);
+      setWebhookDraft('');
+      setFeishuLoadFailed(false);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFeishuSaveError(`删除失败: ${msg}`);
     }
     setFeishuSaving(false);
   };
@@ -234,8 +258,22 @@ export default function SettingsPage() {
               <p className="text-xs text-amber-500/80">未加载到配置，仍可填写后保存</p>
             )}
 
+            <p className="text-xs text-gray-500 leading-relaxed">
+              当前生效链接（脱敏）：{' '}
+              <span className="text-gray-300 font-mono break-all">
+                {feishu.webhook_masked?.trim() ? feishu.webhook_masked : '（无）'}
+              </span>
+              <span className="text-gray-600"> · </span>
+              来源：
+              {feishu.webhook_source === 'database'
+                ? '数据库'
+                : feishu.webhook_source === 'environment'
+                  ? '环境变量'
+                  : '未配置'}
+            </p>
+
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Webhook 链接</label>
+              <label className="block text-xs text-gray-500 mb-1">填写或更新 Webhook</label>
               <input
                 type="text"
                 inputMode="url"
@@ -248,18 +286,22 @@ export default function SettingsPage() {
               />
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={clearWebhookDb}
-                onChange={(e) => {
-                  const v = e.target.checked;
-                  setClearWebhookDb(v);
-                  if (v) setWebhookDraft('');
-                }}
-              />
-              删除已保存的链接
-            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={feishuSaving || !feishu.has_database_webhook_override}
+                title={
+                  feishu.has_database_webhook_override
+                    ? '清除数据库中保存的 Webhook'
+                    : '仅在数据库中保存过链接时可删除（环境变量请在部署侧修改）'
+                }
+                onClick={() => void handleDeleteFeishuWebhook()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-red-500/50 text-red-300 hover:bg-red-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Trash2 size={14} />
+                删除已保存链接
+              </button>
+            </div>
 
             <div>
               <label className="block text-xs text-gray-500 mb-1">关键词前缀</label>
