@@ -111,28 +111,83 @@ class GridExecutor:
                 logger.debug("purge cancel_all_open_algo_orders %s: %s", symbol, e)
         return n
 
+    @staticmethod
+    def _avg_price_from_order_dict(raw: dict | None) -> float:
+        """从 ccxt 订单 dict 解析真实成交均价。
+
+        顺序：cost/filled → info 内交易所原生均价字段 → unified average → 其余。
+        OKX 等所即时回报里 unified ``average`` 偶发与网页不一致，``avgPx`` 更可信。
+        """
+        if not raw:
+            return 0.0
+        filled = float(raw.get("filled", 0) or 0)
+        cost = float(raw.get("cost", 0) or 0)
+        if filled > 1e-12 and cost > 0:
+            v = cost / filled
+            if v > 0:
+                return float(v)
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        for key in ("avgPx", "fillPx", "avgPrice", "ap"):
+            v = info.get(key)
+            if v is None or v == "":
+                continue
+            try:
+                px = float(v)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                continue
+        avg = float(raw.get("average", 0) or 0)
+        if avg > 0:
+            return avg
+        for key in ("px", "price"):
+            v = info.get(key)
+            if v is None or v == "":
+                continue
+            try:
+                px = float(v)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
     async def _filled_exit_price(self, exchange, order_id: str, sym: str) -> float:
         """从交易所拉取已成交订单的均价/成交价，用于交易记录 exit_price。"""
         try:
             raw = await exchange.fetch_order(order_id, sym)
-            avg = float(raw.get("average", 0) or raw.get("price", 0) or 0)
-            if avg > 0:
-                return avg
-            info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
-            for key in ("avgPx", "fillPx", "px"):
-                v = info.get(key)
-                if v is None or v == "":
-                    continue
-                try:
-                    px = float(v)
-                    if px > 0:
-                        return px
-                except (TypeError, ValueError):
-                    continue
-            return 0.0
+            return GridExecutor._avg_price_from_order_dict(raw)
         except Exception as e:
             logger.debug("filled_exit_price fetch_order %s: %s", order_id, e)
             return 0.0
+
+    async def _resolve_entry_fill(
+        self,
+        exchange,
+        symbol: str,
+        order: dict,
+        current_price: float,
+        *,
+        qty_fallback: float,
+    ) -> tuple[float, float]:
+        """市价开仓：优先用 fetch_order 与交易所一致的成交均价与成交量；失败则退回本地解析。"""
+        oid = str(order.get("id") or order.get("orderId") or "").strip()
+        filled_qty = float(order.get("filled", 0) or qty_fallback or 0) or qty_fallback
+        entry_price = GridExecutor._avg_price_from_order_dict(order)
+        if oid:
+            try:
+                fresh = await exchange.fetch_order(oid, symbol)
+                px = GridExecutor._avg_price_from_order_dict(fresh)
+                fq = float(fresh.get("filled", 0) or 0)
+                if px > 0:
+                    entry_price = px
+                if fq > 1e-12:
+                    filled_qty = fq
+            except Exception as e:
+                logger.debug("resolve_entry_fill fetch_order %s: %s", oid, e)
+        if entry_price <= 0:
+            entry_price = float(current_price or 0)
+        return entry_price, filled_qty
 
     @staticmethod
     def _position_row_ct_val_hint(rp: dict, contracts_abs: float) -> float:
@@ -417,8 +472,9 @@ class GridExecutor:
 
         self._consecutive_failures = 0
 
-        entry_price = float(order.get("average", 0) or order.get("price", 0) or current_price)
-        filled_qty = float(order.get("filled", qty) or qty)
+        entry_price, filled_qty = await self._resolve_entry_fill(
+            exchange, symbol, order, current_price, qty_fallback=qty,
+        )
 
         strategy_log_service.success(
             strategy.id,
@@ -992,7 +1048,7 @@ class GridExecutor:
                 result = await exchange.close_position(symbol, strategy.direction)
                 if result:
                     close_success = True
-                    market_avg = float(result.get("average", 0) or result.get("price", 0) or 0)
+                    market_avg = GridExecutor._avg_price_from_order_dict(result if isinstance(result, dict) else {})
             except Exception as e:
                 logger.error("Failed to close position for strategy=%d %s: %s", strategy.id, symbol, e)
                 strategy_log_service.error(strategy.id, f"交易所平仓失败: {e}")

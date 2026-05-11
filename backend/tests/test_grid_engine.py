@@ -1,5 +1,6 @@
 import pytest
 from app.services.grid_engine import GridStrategyEngine, GridLevel
+from app.services.grid_executor import GridExecutor
 
 
 class MockStrategy:
@@ -134,3 +135,14 @@ def test_stop_loss_uses_ct_val_for_contract_linear_pnl():
 
     gl2 = eng.get_next_grid_add(100.0, 5, "long")
     assert gl2 is None
+
+
+def test_avg_price_cost_over_filled_first():
+    raw = {"filled": 3.0, "cost": 2.3913}
+    assert GridExecutor._avg_price_from_order_dict(raw) == pytest.approx(0.7971, rel=1e-5)
+
+
+def test_avg_price_prefers_info_avg_px_over_unified_average():
+    """OKX 等：ccxt average 与网页不一致时，应以 info.avgPx 为先（在无 cost 时）。"""
+    raw = {"filled": 3.0, "average": 0.7955, "info": {"avgPx": "0.7971"}}
+    assert GridExecutor._avg_price_from_order_dict(raw) == pytest.approx(0.7971, rel=1e-5)
