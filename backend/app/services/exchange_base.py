@@ -69,6 +69,48 @@ class BaseExchangeService(ABC):
         return s
 
     @staticmethod
+    def avg_fill_price_from_order(raw: dict | None) -> float:
+        """从 ccxt 订单 dict 解析成交均价（开仓/平仓/日志用）。
+
+        OKX 等 USDT 本位永续：`filled` 常为合约张数，`cost` 为成交支付/收取的计价额，
+        此时 ``cost/filled`` 约等于 ``单价 × ctVal``（例如单价 0.692、ctVal≈10 会得到 6.92），
+        不能排在真实均价之前。优先使用所侧 ``avgPx`` / ccxt ``average``，最后再退回 ``cost/filled``。
+        """
+        if not raw:
+            return 0.0
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        for key in ("avgPx", "fillPx", "avgPrice", "ap"):
+            v = info.get(key)
+            if v is None or v == "":
+                continue
+            try:
+                px = float(v)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                continue
+        avg = float(raw.get("average", 0) or 0)
+        if avg > 0:
+            return avg
+        filled = float(raw.get("filled", 0) or 0)
+        cost = float(raw.get("cost", 0) or 0)
+        if filled > 1e-12 and cost > 0:
+            v = cost / filled
+            if v > 0:
+                return float(v)
+        for key in ("px", "price"):
+            v = info.get(key)
+            if v is None or v == "":
+                continue
+            try:
+                px = float(v)
+                if px > 0:
+                    return px
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
+    @staticmethod
     def position_row_matches_leg(
         pos: dict, symbol: str, side_lower: str, formatted_symbol: str
     ) -> bool:

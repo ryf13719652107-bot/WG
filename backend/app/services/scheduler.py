@@ -262,18 +262,7 @@ class StrategyScheduler:
                     if not co or co.strategy_id != strategy_id:
                         continue
                     co.filled = filled_w or co.filled
-                    avg = float(raw.get("average", 0) or 0)
-                    if avg <= 0 and isinstance(info, dict):
-                        for k in ("avgPx", "fillPx"):
-                            v = info.get(k)
-                            if v is None or v == "":
-                                continue
-                            try:
-                                avg = float(v)
-                            except (TypeError, ValueError):
-                                continue
-                            if avg > 0:
-                                break
+                    avg = BaseExchangeService.avg_fill_price_from_order(raw)
                     if avg > 0:
                         co.price = avg
                     if is_filled or essentially_filled:

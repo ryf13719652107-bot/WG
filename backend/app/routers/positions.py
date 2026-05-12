@@ -80,7 +80,7 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
     close_reason = "manual"
 
     if result and result.get("id"):
-        exit_price = float(result.get("average", 0) or result.get("price", 0) or 0)
+        exit_price = BaseExchangeService.avg_fill_price_from_order(result)
     else:
         # close_position 在交易所已无持仓时返回空 —— 仍可清理本地未完成记录（常见：手工在交易所平仓后）
         fetched = await exchange.fetch_positions([position.symbol])

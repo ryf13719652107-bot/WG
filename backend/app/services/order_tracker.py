@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from typing import Optional
 
+from .exchange_base import BaseExchangeService
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,7 +105,7 @@ class OrderTracker:
                 if not status_str or status_str in ("open", "live"):
                     status_str = st2
         co.filled = float(raw.get("filled", 0) or 0)
-        avg_price = float(raw.get("average", 0) or 0)
+        avg_price = BaseExchangeService.avg_fill_price_from_order(raw)
         if avg_price > 0:
             co.price = avg_price
         amount = float(raw.get("amount", 0) or 0) or float(co.amount or 0)

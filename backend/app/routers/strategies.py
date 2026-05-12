@@ -152,7 +152,7 @@ async def _flatten_strategy_orders_and_positions(
                 reduce_only=True, position_side=position_side,
             )
             close_success = True
-            exit_price = float(order.get("average", 0) or order.get("price", 0) or 0)
+            exit_price = BaseExchangeService.avg_fill_price_from_order(order)
             if close_reason == "panic_close":
                 strategy_log_service.success(
                     strategy_id,
@@ -169,7 +169,7 @@ async def _flatten_strategy_orders_and_positions(
                 order2 = await exchange.close_position(symbol, direction)
                 if order2:
                     close_success = True
-                    exit_price = float(order2.get("average", 0) or order2.get("price", 0) or 0)
+                    exit_price = BaseExchangeService.avg_fill_price_from_order(order2)
                     if close_reason == "panic_close":
                         strategy_log_service.success(
                             strategy_id,

@@ -113,44 +113,8 @@ class GridExecutor:
 
     @staticmethod
     def _avg_price_from_order_dict(raw: dict | None) -> float:
-        """从 ccxt 订单 dict 解析真实成交均价。
-
-        顺序：cost/filled → info 内交易所原生均价字段 → unified average → 其余。
-        OKX 等所即时回报里 unified ``average`` 偶发与网页不一致，``avgPx`` 更可信。
-        """
-        if not raw:
-            return 0.0
-        filled = float(raw.get("filled", 0) or 0)
-        cost = float(raw.get("cost", 0) or 0)
-        if filled > 1e-12 and cost > 0:
-            v = cost / filled
-            if v > 0:
-                return float(v)
-        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
-        for key in ("avgPx", "fillPx", "avgPrice", "ap"):
-            v = info.get(key)
-            if v is None or v == "":
-                continue
-            try:
-                px = float(v)
-                if px > 0:
-                    return px
-            except (TypeError, ValueError):
-                continue
-        avg = float(raw.get("average", 0) or 0)
-        if avg > 0:
-            return avg
-        for key in ("px", "price"):
-            v = info.get(key)
-            if v is None or v == "":
-                continue
-            try:
-                px = float(v)
-                if px > 0:
-                    return px
-            except (TypeError, ValueError):
-                continue
-        return 0.0
+        """见 ``BaseExchangeService.avg_fill_price_from_order``。"""
+        return BaseExchangeService.avg_fill_price_from_order(raw)
 
     async def _filled_exit_price(self, exchange, order_id: str, sym: str) -> float:
         """从交易所拉取已成交订单的均价/成交价，用于交易记录 exit_price。"""

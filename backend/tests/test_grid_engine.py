@@ -1,6 +1,7 @@
 import pytest
 from app.services.grid_engine import GridStrategyEngine, GridLevel
 from app.services.grid_executor import GridExecutor
+from app.services.exchange_base import BaseExchangeService
 
 
 class MockStrategy:
@@ -137,12 +138,24 @@ def test_stop_loss_uses_ct_val_for_contract_linear_pnl():
     assert gl2 is None
 
 
-def test_avg_price_cost_over_filled_first():
+def test_avg_price_cost_over_filled_fallback_when_no_native_avg():
+    """无 avgPx / average 时退回 cost/filled（filled 为基础币数量或等价口径）。"""
     raw = {"filled": 3.0, "cost": 2.3913}
     assert GridExecutor._avg_price_from_order_dict(raw) == pytest.approx(0.7971, rel=1e-5)
 
 
 def test_avg_price_prefers_info_avg_px_over_unified_average():
-    """OKX 等：ccxt average 与网页不一致时，应以 info.avgPx 为先（在无 cost 时）。"""
+    """OKX 等：info.avgPx 优先于 ccxt unified average。"""
     raw = {"filled": 3.0, "average": 0.7955, "info": {"avgPx": "0.7971"}}
     assert GridExecutor._avg_price_from_order_dict(raw) == pytest.approx(0.7971, rel=1e-5)
+
+
+def test_avg_price_okx_swap_uses_avg_px_not_cost_over_contracts():
+    """OKX 永续 filled 为张数时 cost/filled 会偏大；必须以 avgPx/average 为准。"""
+    raw = {"filled": 0.72, "cost": 4.9824, "average": 0, "info": {"avgPx": "0.692"}}
+    assert BaseExchangeService.avg_fill_price_from_order(raw) == pytest.approx(0.692, rel=1e-5)
+
+
+def test_avg_price_prefers_unified_average_before_misleading_cost_ratio():
+    raw = {"filled": 0.72, "cost": 4.9824, "average": 0.692}
+    assert BaseExchangeService.avg_fill_price_from_order(raw) == pytest.approx(0.692, rel=1e-5)
