@@ -12,12 +12,13 @@ const schema = z.object({
   symbol: z.string().min(1, '请选择交易对'),
   base_qty_type: z.enum(['margin_pct', 'usdt']),
   base_qty_value: z.number().min(0.01),
-  max_layers: z.number().min(1).max(50),
+  max_layers: z.number().min(1).max(99999),
   tp_pct: z.number().min(0.1).max(50),
   grid_drop_base_pct: z.number().min(0.1).max(100),
   grid_interval_multiplier: z.number().min(1).max(10),
   position_multiplier: z.number().min(1).max(10),
   cumulative_loss_threshold_u: z.number().min(0),
+  stop_loss_close_pct: z.number().min(0).max(100),
   reopen_after_close: z.coerce.boolean(),
 });
 
@@ -42,6 +43,7 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
       grid_interval_multiplier: initial.grid_interval_multiplier,
       position_multiplier: initial.position_multiplier,
       cumulative_loss_threshold_u: initial.cumulative_loss_threshold_u,
+      stop_loss_close_pct: initial.stop_loss_close_pct ?? 100,
       reopen_after_close: initial.reopen_after_close,
     };
   }
@@ -57,6 +59,7 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
     grid_interval_multiplier: 1.5,
     position_multiplier: 1.5,
     cumulative_loss_threshold_u: 0,
+    stop_loss_close_pct: 100,
     reopen_after_close: true,
   };
 }
@@ -233,6 +236,7 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
           <div>
             <label className={labelClass}>最大加仓层数</label>
             <input type="number" {...register('max_layers', { valueAsNumber: true })} className={inputClass} />
+            <span className="text-xs text-gray-600">链式挂单：同时仅一单下一层加仓限价，成交后再挂下一层</span>
           </div>
         </div>
 
@@ -248,18 +252,23 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
           <div>
             <label className={labelClass}>止损触发亏损 (USDT)</label>
             <input type="number" step="0.01" {...register('cumulative_loss_threshold_u', { valueAsNumber: true })} className={inputClass} />
-            <span className="text-xs text-gray-600">按该亏损额推算触发价并挂交易所条件止损；0=不挂</span>
+            <span className="text-xs text-gray-600">按整仓推算触发价；0=不挂止损</span>
+          </div>
+          <div>
+            <label className={labelClass}>止损平仓比例 (%)</label>
+            <input type="number" step="0.1" {...register('stop_loss_close_pct', { valueAsNumber: true })} className={inputClass} />
+            <span className="text-xs text-gray-600">触发后减仓当前持仓数量的比例；0=不挂止损；100=触发一次减满仓（旧逻辑）</span>
           </div>
         </div>
 
         <div>
           <label className={`${labelClass} flex items-center gap-2`}>
-            <span>平仓后自动重开</span>
+            <span>止盈全平后自动重开</span>
             <label className="relative inline-flex items-center cursor-pointer">
               <input type="checkbox" {...register('reopen_after_close')} className="sr-only peer" />
               <div className="w-9 h-5 bg-gray-600 peer-checked:bg-blue-600 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
             </label>
-            <span className="text-xs text-gray-500">止盈/止损后立即开新首单</span>
+            <span className="text-xs text-gray-500">仅止盈全部平仓后生效；止损减仓或止损清仓后不自动重开</span>
           </label>
         </div>
 

@@ -179,6 +179,16 @@ class OrderTracker:
             self._orders.pop(oid, None)
             self._by_strategy[strategy_id].discard(oid)
 
+    def discard_order(self, order_id: str) -> None:
+        """从内存缓存移除一条订单（如已处理的止损成交单）。"""
+        oid = (order_id or "").strip()
+        if not oid:
+            return
+        co = self._orders.pop(oid, None)
+        if co:
+            sid = int(co.strategy_id) if co.strategy_id is not None else 0
+            self._by_strategy.get(sid, set()).discard(oid)
+
     def clear_strategy(self, strategy_id: int):
         """Remove all tracked orders for a strategy."""
         ids = self._by_strategy.pop(strategy_id, set())

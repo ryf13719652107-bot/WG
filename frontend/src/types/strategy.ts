@@ -11,6 +11,7 @@ export interface Strategy {
   grid_interval_multiplier: number;
   position_multiplier: number;
   cumulative_loss_threshold_u: number;
+  stop_loss_close_pct: number;
   reopen_after_close: boolean;
   status: 'running' | 'stopped' | 'error';
   started_at: string | null;
@@ -30,5 +31,6 @@ export interface StrategyFormData {
   grid_interval_multiplier: number;
   position_multiplier: number;
   cumulative_loss_threshold_u: number;
+  stop_loss_close_pct: number;
   reopen_after_close: boolean;
 }

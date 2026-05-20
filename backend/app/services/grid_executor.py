@@ -17,11 +17,11 @@ class GridExecutor:
     """Per-symbol grid strategy lifecycle executor.
 
     Flow:
-    1. No position → market open initial + place TP limit + place grid add limits + place SL order
-    2. Has positions → check SL order fills / TP fills / grid add fills
-    3. TP fill → close all + reopen initial
-    4. Grid add fill → update avg entry + replace TP + update SL
-    5. SL fill → close all + reopen initial
+    1. No position → 市价首单 + 止盈限价 + （至多）一单下一层加仓限价 + 可选止损条件单
+    2. 有持仓 → 止损 / 止盈 / 加仓 成交检测
+    3. TP 成交 → 全平记账 +（可选）重开首单
+    4. 加仓限价成交 → 合并均价并重挂止盈/止损 → 挂「下一层」加仓限价（单层链式）
+    5. SL 成交 → 全平记账 +（可选）重开首单
     """
 
     @staticmethod
@@ -57,6 +57,100 @@ class GridExecutor:
         if qty >= 0.01:
             return round(qty, 6)
         return round(qty, 8)
+
+    @staticmethod
+    def _clear_positions_add_oid(positions: list) -> None:
+        """清除各持仓行上的待加仓挂单号（市价全平时由 tracker/扫单处理）。"""
+        for p in positions:
+            p.add_limit_order_id = None
+
+    @staticmethod
+    def _anchor_grid_entry_price(positions: list) -> float:
+        """马丁网格锚定价：首笔市价单的成交价（grid_level==0）。"""
+        for p in positions:
+            if int(getattr(p, "grid_level", 0) or 0) == 0:
+                return float(getattr(p, "entry_price", 0.0) or 0.0)
+        return 0.0
+
+    @staticmethod
+    def _set_all_positions_add_oid(positions: list, oid: str | None) -> None:
+        o = (oid or "").strip() or None
+        for p in positions:
+            p.add_limit_order_id = o
+
+    async def _rehydrate_grid_add_tracker_if_needed(
+        self, exchange, strategy, symbol: str, positions: list,
+    ) -> None:
+        """服务重启等情况：DB 有 add_limit_order_id 则拉回所侧并入 tracker。"""
+        oid = ""
+        for p in positions:
+            o = (getattr(p, "add_limit_order_id", None) or "").strip()
+            if o:
+                oid = o
+                break
+        if not oid:
+            return
+        if order_tracker.get(oid):
+            return
+
+        side_raw = "buy" if strategy.direction == "long" else "sell"
+        try:
+            raw = await exchange.fetch_order(oid, symbol)
+        except Exception as e:
+            logger.warning("grid_add rehydrate fetch_order %s: %s", oid, e)
+            return
+
+        amt = float(raw.get("amount", 0) or 0)
+        if amt <= 1e-16:
+            amt = float(raw.get("filled", 0) or 0)
+        px_raw = raw.get("price")
+        px_lim = float(px_raw) if px_raw not in (None, "") else 0.0
+        avg_px = BaseExchangeService.avg_fill_price_from_order(raw)
+        use_px = px_lim if px_lim > 0 else avg_px
+
+        order_tracker.add(
+            oid, symbol, side_raw, "limit",
+            amt if amt > 0 else float(raw.get("filled", 0) or 0),
+            use_px if use_px > 0 else 0.0,
+            strategy.id, "grid_add",
+        )
+        updated = await order_tracker.check_order(exchange, oid, symbol)
+        co = updated or order_tracker.get(oid)
+        if co and co.is_done and co.status != OrderState.FILLED:
+            self._clear_positions_add_oid(positions)
+            strategy_log_service.info(
+                strategy.id,
+                f"加仓挂单 {oid[:16]}… 已不是待成交状态，已清空本地挂单号并将于本周期尝试挂下一层",
+            )
+
+    async def _maybe_place_next_grid_limit_order(
+        self, strategy, symbol: str, exchange, positions: list,
+    ) -> None:
+        """同时仅保留一笔加仓限价单；未达到 max_layers 时挂「下一层」。"""
+        pending = [
+            o for o in order_tracker.get_pending_by_purpose(strategy.id, "grid_add")
+            if GridExecutor._order_symbol_matches(o.symbol, symbol)
+        ]
+        if pending:
+            return
+
+        anchor = self._anchor_grid_entry_price(positions)
+        if anchor <= 0:
+            return
+
+        max_lvl = max(int(getattr(p, "grid_level", 0) or 0) for p in positions)
+        if max_lvl >= self.engine.max_layers:
+            self._clear_positions_add_oid(positions)
+            return
+
+        gl = self.engine.get_next_grid_add(anchor, max_lvl, strategy.direction)
+        if not gl:
+            self._clear_positions_add_oid(positions)
+            return
+
+        oid = await self._place_grid_add(strategy, symbol, exchange, gl)
+        if oid:
+            self._set_all_positions_add_oid(positions, oid)
 
     async def _purge_exchange_open_orders(
         self, exchange, symbol: str, strategy_id: int, direction: str,
@@ -253,28 +347,35 @@ class GridExecutor:
         position_side: str,
         log_label: str,
     ) -> None:
-        """按当前持仓加权均价与张数推算触发价（张数会先按交易所步长取整），使名义浮亏≈阈值U."""
-        loss_u = self.engine.loss_threshold
-        if loss_u <= 0:
+        """按当前持仓加权均价与张数推算触发价（全仓口径）；实际下单数量为持仓×止损平仓比例%。
+
+        触发价仍按名义亏损阈值 U 与「当前整仓」张数推算；成交时仅平 ``stop_loss_close_pct`` 的比例。
+        """
+        loss_u = float(getattr(strategy, "cumulative_loss_threshold_u", 0) or 0)
+        pct = float(getattr(strategy, "stop_loss_close_pct", 100) or 0)
+        if loss_u <= 0 or pct <= 0:
             return
 
         avg_raw, qty_raw, basis, ct_from_pos = await self._avg_qty_for_stop_loss_basis(
             exchange, symbol, strategy.direction, db_positions
         )
-        qty_sl = await exchange.normalize_order_amount(symbol, qty_raw)
+        qty_basis = await exchange.normalize_order_amount(symbol, qty_raw)
+        qty_close_raw = qty_raw * (pct / 100.0)
+        qty_sl = await exchange.normalize_order_amount(symbol, qty_close_raw)
         ct_val = await exchange.linear_contract_ct_val(symbol)
         if ct_from_pos > 0:
             ct_val = ct_from_pos
         sl_price = self.engine.stop_loss_price_for_fixed_usdt_loss(
-            avg_raw, qty_sl, loss_u, strategy.direction, ct_val=ct_val,
+            avg_raw, qty_basis, loss_u, strategy.direction, ct_val=ct_val,
         )
         sl_side = "sell" if strategy.direction == "long" else "buy"
 
-        if sl_price <= 0 or qty_sl <= 0 or not self._check_order_qty(qty_sl, symbol):
+        if sl_price <= 0 or qty_basis <= 0 or qty_sl <= 0 or not self._check_order_qty(qty_sl, symbol):
             strategy_log_service.warning(
                 strategy.id,
                 f"{log_label}跳过: 无效价或量 basis={basis} avg={avg_raw:.6f} raw_qty={qty_raw:.8f} "
-                f"step_qty={qty_sl:.8f} ct_val={ct_val:.8f} loss_u={loss_u:.6f} sl_price={sl_price:.8f}",
+                f"basis_qty(step)={qty_basis:.8f} close_qty(step)={qty_sl:.8f} pct={pct:.2f}% "
+                f"ct_val={ct_val:.8f} loss_u={loss_u:.6f} sl_price={sl_price:.8f}",
             )
             return
 
@@ -290,27 +391,29 @@ class GridExecutor:
             )
             strategy_log_service.success(
                 strategy.id,
-                f"{log_label}操作成功: basis={basis} avg={avg_raw:.6f} step_qty={qty_sl:.8f} "
-                f"止损价={sl_price:.6f} (阈值约{loss_u:.2f}U) 订单ID={sl_order_id or '-'}",
+                f"{log_label}操作成功: basis={basis} avg={avg_raw:.6f} "
+                f"平仓比例={pct:.2f}% 条件单数量(step)={qty_sl:.8f}（估算触发亏损≈{loss_u:.2f}U） "
+                f"止损价={sl_price:.6f} 订单ID={sl_order_id or '-'}",
             )
             self._schedule_feishu(
                 strategy,
-                title=f"{log_label}（市价条件单）",
+                title=f"{log_label}（市价条件单 · 按比例减仓）",
                 body_lines=[
                     f"basis={basis} 加权均价≈{avg_raw:.6f}",
-                    f"下单数量(step)={qty_sl:.8f}",
+                    f"平仓比例≈{pct:.2f}% 条件单数量(step)≈{qty_sl:.8f}",
                     f"触发价≈{sl_price:.6f}",
-                    f"阈值约 {loss_u:.2f} U",
+                    f"名义亏损阈值≈ {loss_u:.2f} U（推算触发价）",
                     f"algoId={sl_order_id}" if sl_order_id else "",
                 ],
             )
             logger.info(
-                "%s SL placed sym=%s basis=%s avg=%s qty_sl=%s sl_price=%s loss_u=%s",
+                "%s SL placed sym=%s basis=%s avg=%s qty_close=%s pct=%s sl_price=%s loss_u=%s",
                 log_label,
                 symbol,
                 basis,
                 avg_raw,
                 qty_sl,
+                pct,
                 sl_price,
                 loss_u,
             )
@@ -374,6 +477,8 @@ class GridExecutor:
         add_filled = await self._check_grid_add_fills(session, strategy, symbol, exchange, open_positions, current_price)
         if add_filled:
             return
+
+        await self._maybe_place_next_grid_limit_order(strategy, symbol, exchange, open_positions)
 
         await session.commit()
 
@@ -515,7 +620,7 @@ class GridExecutor:
 
         await session.commit()
 
-        if self.engine.loss_threshold > 0:
+        if float(strategy.cumulative_loss_threshold_u or 0) > 0 and float(strategy.stop_loss_close_pct or 0) > 0:
             await self._compute_and_place_stop_loss(
                 strategy=strategy,
                 symbol=symbol,
@@ -525,47 +630,39 @@ class GridExecutor:
                 log_label="挂单止损",
             )
 
-        grid_levels = self.engine.calculate_grid_levels(entry_price, strategy.direction)
-        placed = 0
-        total = len(grid_levels)
-        for gl in grid_levels:
-            result = await self._place_grid_add(session, strategy, symbol, exchange, pos, gl)
-            if result:
-                placed += 1
-        if placed == total:
-            strategy_log_service.success(
-                strategy.id,
-                f"挂单加仓: {placed}/{total} 层已挂单",
-            )
-            self._schedule_feishu(
-                strategy,
-                title="挂单加仓（限价挂单汇总）",
-                body_lines=[
-                    f"已成功挂出 {placed}/{total} 层加仓限价单",
-                    f"基准入场价≈{entry_price:.8f}",
-                ],
-            )
-        else:
-            strategy_log_service.warning(
-                strategy.id,
-                f"挂单加仓: {placed}/{total} 层已挂单 (失败{total-placed}层可能因交易所订单/持仓限制, 建议降低max_layers)",
-            )
-            self._schedule_feishu(
-                strategy,
-                title="挂单加仓（部分失败）",
-                body_lines=[
-                    f"成功 {placed}/{total} 层",
-                    f"失败 {total - placed} 层，请留意交易所限额或持仓上限",
-                    f"基准入场价≈{entry_price:.8f}",
-                ],
-            )
+        gl_init = self.engine.get_next_grid_add(entry_price, 0, strategy.direction)
+        if gl_init:
+            oid_add = await self._place_grid_add(strategy, symbol, exchange, gl_init)
+            if oid_add:
+                pos.add_limit_order_id = oid_add
+                strategy_log_service.success(
+                    strategy.id,
+                    "挂单加仓(链式): 已挂第 1 层限价单（同时仅一单，成交后再挂下一层）",
+                )
+                self._schedule_feishu(
+                    strategy,
+                    title="挂单加仓 · 单层链式（第 1 层）",
+                    body_lines=[
+                        f"Lv1 触发价≈{gl_init.trigger_price:.8f}",
+                        f"锚定首单价≈{entry_price:.8f}",
+                        f"加仓层上限={self.engine.max_layers}",
+                    ],
+                )
+            else:
+                strategy_log_service.warning(
+                    strategy.id,
+                    "挂单加仓: 首层限价单挂单失败（下一调度周期会自动重试）",
+                )
+
+        await session.commit()
 
         logger.info(
-            "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f grid_placed=%d/%d",
-            strategy.direction, symbol, filled_qty, entry_price, tp_price, placed, total,
+            "Grid initial open: %s %s qty=%.4f entry=%.4f tp=%.4f grid_next_lv=%s",
+            strategy.direction, symbol, filled_qty, entry_price, tp_price,
+            1 if gl_init else "-",
         )
 
-    async def _place_grid_add(self, session, strategy, symbol, exchange, position, grid_level: GridLevel):
+    async def _place_grid_add(self, strategy, symbol, exchange, grid_level: GridLevel):
         """Place a limit add order for a grid level."""
         add_side = "buy" if strategy.direction == "long" else "sell"
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
@@ -734,7 +831,8 @@ class GridExecutor:
         return True
 
     async def _check_grid_add_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
-        """Check if grid add limit orders have filled. Update positions and re-place orders."""
+        """加仓限价成交 → 记账并刷新止盈/止损，再在本函数末尾挂下一层加仓（单层链）。"""
+        await self._rehydrate_grid_add_tracker_if_needed(exchange, strategy, symbol, positions)
         add_orders = order_tracker.get_pending_by_purpose(strategy.id, "grid_add")
         filled_orders = order_tracker.get_filled(strategy.id, "grid_add")
         all_orders = {o.order_id: o for o in add_orders + filled_orders}
@@ -780,6 +878,7 @@ class GridExecutor:
             await session.commit()
             await session.refresh(pos)
             positions.append(pos)
+            self._clear_positions_add_oid(positions)
             any_filled = True
 
             strategy_log_service.success(
@@ -841,7 +940,7 @@ class GridExecutor:
             else:
                 strategy_log_service.warning(strategy.id, f"止盈数量超限({total_qty:.2f}),跳过挂单,请手动止盈")
 
-            if self.engine.loss_threshold > 0:
+            if float(strategy.cumulative_loss_threshold_u or 0) > 0 and float(strategy.stop_loss_close_pct or 0) > 0:
                 await self._cancel_sl_orders(session, strategy, symbol, exchange)
                 await self._compute_and_place_stop_loss(
                     strategy=strategy,
@@ -853,7 +952,8 @@ class GridExecutor:
                 )
 
             await session.commit()
-            # 所有加仓单已在首单开仓时一次性挂出，成交后无需再挂下一层
+            await self._maybe_place_next_grid_limit_order(strategy, symbol, exchange, positions)
+            await session.commit()
 
         return any_filled
 
@@ -881,9 +981,41 @@ class GridExecutor:
                         o.order_id, strategy.id, e,
                     )
 
+    async def _cancel_pending_grid_add_orders(self, strategy, symbol: str, exchange) -> None:
+        """撤销 tracker 中待成交的加仓限价（减仓后需重挂链）。"""
+        for o in order_tracker.get_pending_by_purpose(strategy.id, "grid_add"):
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
+                continue
+            try:
+                await exchange.cancel_order(o.order_id, o.symbol)
+            except Exception as e:
+                logger.debug("cancel pending grid_add %s: %s", o.order_id, e)
+
+    @staticmethod
+    def _allocate_stop_close_quantities(active_positions: list, total_close: float) -> list[float]:
+        """将止损成交总量按各腿持仓比例分摊（最后一腿吃掉舍入误差）。"""
+        total_before = sum(float(p.quantity) for p in active_positions)
+        if total_before <= 0 or total_close <= 0:
+            return [0.0] * len(active_positions)
+        tc = min(total_close, total_before)
+        n = len(active_positions)
+        out: list[float] = []
+        acc = 0.0
+        for i, p in enumerate(active_positions):
+            qi = float(p.quantity)
+            if i == n - 1:
+                ai = max(0.0, tc - acc)
+            else:
+                ai = GridExecutor._round_qty(tc * qi / total_before)
+                acc += ai
+            out.append(ai)
+        return out
+
     async def _check_stop_loss_fills(self, session, strategy, symbol, exchange, positions, current_price) -> bool:
-        """Check if stop loss orders have filled. If so, close all and reopen."""
-        if self.engine.loss_threshold <= 0:
+        """止损条件单成交：按成交数量减仓记账；剩余持仓刷新止盈/加仓链；永不止损重开。"""
+        loss_u = float(getattr(strategy, "cumulative_loss_threshold_u", 0) or 0)
+        pct_sl = float(getattr(strategy, "stop_loss_close_pct", 100) or 0)
+        if loss_u <= 0 or pct_sl <= 0:
             return False
 
         sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
@@ -910,54 +1042,152 @@ class GridExecutor:
         if sl_exit <= 0:
             sl_exit = current_price
 
+        filled_qty_sl = float(ref_sl.filled) if ref_sl.filled > 0 else float(ref_sl.amount)
+
         strategy_log_service.success(
             strategy.id,
-            f"止损触发: {symbol} 止损成交价≈{sl_exit:.6f}（记账用），开始平仓并记录交易",
+            f"止损触发: {symbol} 止损成交数量≈{filled_qty_sl:.8f} 成交价≈{sl_exit:.6f}，按比例减仓记账",
         )
         self._schedule_feishu(
             strategy,
-            title="止损触发（Algo 条件市价单已成交）",
+            title="止损触发（条件单 · 按比例减仓）",
             body_lines=[
-                f"止损成交价≈{sl_exit:.8f}",
-                "后续：平仓记录并按配置自动重开或未重开",
+                f"减仓数量≈{filled_qty_sl:.8f}",
+                f"成交价≈{sl_exit:.8f}",
+                "止损后不自动重开；有剩余持仓时将刷新止盈与加仓链",
             ],
         )
 
-        await self._close_all(
-            session, strategy, symbol, exchange, positions, current_price, "stop_loss",
-            exit_price_override=sl_exit,
-            positions_already_closed=True,
-        )
+        await self._cancel_tp_orders(session, strategy, symbol, exchange, positions)
+        await self._cancel_sl_orders(session, strategy, symbol, exchange)
+        await self._cancel_pending_grid_add_orders(strategy, symbol, exchange)
 
-        await session.refresh(strategy)
+        order_tracker.discard_order(ref_sl.order_id)
 
-        if strategy.reopen_after_close and strategy.status == "running":
-            strategy_log_service.success(strategy.id, f"止损后续操作成功: {symbol} 已按配置自动重开首单")
-            self._schedule_feishu(
-                strategy,
-                title="止损完成 · 自动重开",
-                body_lines=["市价止损后已重新开首单并挂新单（若启用止损单等）"],
-            )
-            try:
-                again = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
-                if again > 0:
-                    strategy_log_service.info(
-                        strategy.id,
-                        f"重开首单前再次撤销 {symbol} 残留挂单约 {again} 笔，避免与上一轮订单重叠",
-                    )
-            except Exception as e:
-                logger.warning("purge before reopen after SL strategy=%d: %s", strategy.id, e)
-            await self._open_initial(session, strategy, symbol, exchange, current_price)
-        else:
-            strategy_log_service.success(strategy.id, f"止损后续操作成功: {symbol} 策略已停止 (reopen_after_close=否)")
+        active = [
+            p for p in positions
+            if getattr(p, "closed_at", None) is None and float(getattr(p, "quantity", 0) or 0) > 1e-18
+        ]
+        total_before = sum(float(p.quantity) for p in active)
+        if total_before <= 0:
             strategy.status = "stopped"
             await session.commit()
-            self._schedule_feishu(
-                strategy,
-                title="止损完成 · 策略已停止",
-                body_lines=["reopen_after_close=否"],
+            order_tracker.clear_strategy(strategy.id)
+            try:
+                await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
+            except Exception as e:
+                logger.warning("purge after SL empty strategy=%d: %s", strategy.id, e)
+            return True
+
+        tc = min(max(filled_qty_sl, 0.0), total_before)
+        allocations = GridExecutor._allocate_stop_close_quantities(active, tc)
+
+        now = now_beijing()
+        dust_gate = max(total_before * 1e-9, 1e-12)
+        for pos, ai in zip(active, allocations):
+            if ai <= 1e-18:
+                continue
+            exit_price = sl_exit
+            if pos.side == "long":
+                pnl = (exit_price - pos.entry_price) * ai
+                pct = (exit_price - pos.entry_price) / pos.entry_price * 100 if pos.entry_price > 0 else 0
+            else:
+                pnl = (pos.entry_price - exit_price) * ai
+                pct = (pos.entry_price - exit_price) / pos.entry_price * 100 if pos.entry_price > 0 else 0
+
+            trade = Trade(
+                strategy_id=strategy.id,
+                account_id=strategy.account_id,
+                symbol=pos.symbol,
+                side=pos.side,
+                quantity=ai,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                realized_pnl=round(pnl, 4),
+                pnl_pct=round(pct, 4),
+                entry_time=pos.opened_at or now,
+                exit_time=now,
+                layer=pos.layer,
+                grid_level=pos.grid_level,
+                close_reason="stop_loss",
+            )
+            session.add(trade)
+            pos.quantity = float(pos.quantity) - ai
+            if pos.quantity <= dust_gate:
+                pos.quantity = 0.0
+                pos.closed_at = now
+
+        self._clear_positions_add_oid(positions)
+
+        await session.commit()
+
+        survivors = [
+            p for p in positions
+            if getattr(p, "closed_at", None) is None and float(getattr(p, "quantity", 0) or 0) > 1e-18
+        ]
+        remaining_total = sum(float(p.quantity) for p in survivors)
+
+        try:
+            rem_norm = await exchange.normalize_order_amount(symbol, remaining_total)
+        except Exception:
+            rem_norm = remaining_total
+
+        if remaining_total <= 1e-18 or rem_norm <= 0:
+            strategy.status = "stopped"
+            await session.commit()
+            strategy_log_service.success(strategy.id, f"止损后已无剩余持仓，策略已停止: {symbol}")
+            order_tracker.clear_strategy(strategy.id)
+            try:
+                await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
+            except Exception as e:
+                logger.warning("purge after SL flat strategy=%d: %s", strategy.id, e)
+            return True
+
+        side = strategy.direction
+        position_side = "LONG" if side == "long" else "SHORT"
+        avg_entry = self.engine.calculate_avg_entry(survivors)
+        tp_price = self.engine.calculate_tp_price(avg_entry, side)
+        tp_side = "sell" if side == "long" else "buy"
+        total_qty = sum(float(p.quantity) for p in survivors)
+        if self._check_order_qty(total_qty, symbol):
+            try:
+                tp_order = await exchange.create_limit_order(
+                    symbol, tp_side, total_qty, tp_price,
+                    reduce_only=True, position_side=position_side,
+                )
+                tp_order_id = str(tp_order.get("id", ""))
+                for p in survivors:
+                    p.tp_limit_order_id = tp_order_id
+                    p.take_profit_price = tp_price
+                order_tracker.add(
+                    tp_order_id, symbol, tp_side, "limit",
+                    total_qty, tp_price, strategy.id, "tp",
+                )
+                strategy_log_service.success(
+                    strategy.id,
+                    f"止损减仓后重新挂单止盈: 合并数量={total_qty:.4f} 均价={avg_entry:.4f} 止盈价={tp_price:.4f}",
+                )
+            except Exception as e:
+                logger.error("TP after partial SL failed: %s", e)
+                strategy_log_service.error(strategy.id, f"止损减仓后挂单止盈失败: {e}")
+        else:
+            strategy_log_service.warning(strategy.id, f"止损减仓后止盈数量超限({total_qty:.2f}),跳过挂单")
+
+        if float(getattr(strategy, "cumulative_loss_threshold_u", 0) or 0) > 0 and float(
+            getattr(strategy, "stop_loss_close_pct", 100) or 0
+        ) > 0:
+            await self._compute_and_place_stop_loss(
+                strategy=strategy,
+                symbol=symbol,
+                exchange=exchange,
+                db_positions=survivors,
+                position_side=position_side,
+                log_label="止损减仓后再挂止损",
             )
 
+        await self._maybe_place_next_grid_limit_order(strategy, symbol, exchange, survivors)
+
+        await session.commit()
         return True
 
     async def _close_all(

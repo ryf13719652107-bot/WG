@@ -145,7 +145,11 @@ export default function StrategyDetailPage() {
             <div className={valClass}>{strategy.cumulative_loss_threshold_u > 0 ? `${strategy.cumulative_loss_threshold_u} U` : '已禁用'}</div>
           </div>
           <div>
-            <span className={labelClass}>平仓重开</span>
+            <span className={labelClass}>止损平仓比例</span>
+            <div className={valClass}>{strategy.stop_loss_close_pct ?? 100}%（0=不挂止损）</div>
+          </div>
+          <div>
+            <span className={labelClass}>止盈全平后重开</span>
             <div className={valClass}>{strategy.reopen_after_close ? '是' : '否'}</div>
           </div>
         </div>

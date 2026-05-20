@@ -56,6 +56,7 @@ async def init_db():
             "ALTER TABLE strategies ADD COLUMN grid_interval_multiplier FLOAT DEFAULT 1.5",
             "ALTER TABLE strategies ADD COLUMN position_multiplier FLOAT DEFAULT 1.5",
             "ALTER TABLE strategies ADD COLUMN cumulative_loss_threshold_u FLOAT DEFAULT 0.0",
+            "ALTER TABLE strategies ADD COLUMN stop_loss_close_pct FLOAT DEFAULT 100.0",
             "ALTER TABLE strategies ADD COLUMN reopen_after_close BOOLEAN DEFAULT 1",
             # Position grid tracking
             "ALTER TABLE positions ADD COLUMN grid_level INTEGER DEFAULT 0",

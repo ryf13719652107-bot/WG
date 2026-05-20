@@ -14,6 +14,7 @@ class MockStrategy:
         self.position_multiplier = kwargs.get("position_multiplier", 1.5)
         self.max_layers = kwargs.get("max_layers", 8)
         self.cumulative_loss_threshold_u = kwargs.get("cumulative_loss_threshold_u", 0.0)
+        self.stop_loss_close_pct = kwargs.get("stop_loss_close_pct", 100.0)
         self.leverage = kwargs.get("leverage", 20)
 
 
@@ -42,6 +43,19 @@ def test_calculate_grid_levels_long():
     assert levels[3].trigger_price == pytest.approx(91.875, abs=0.01)
     assert levels[3].quantity == pytest.approx(5.0625, abs=0.01)
     assert levels[3].drop_pct == pytest.approx(8.125, abs=0.01)
+
+
+def test_calculate_grid_level_at_matches_batch():
+    """大单层时用单层计算应与 calculate_grid_levels 一致。"""
+    s = MockStrategy(grid_drop_base_pct=1.0, grid_interval_multiplier=1.5, position_multiplier=1.5, max_layers=4)
+    eng = GridStrategyEngine(s)
+    batch = eng.calculate_grid_levels(100.0, "long")
+    for row in batch:
+        one = eng.calculate_grid_level_at(100.0, "long", row.level)
+        assert one is not None
+        assert one.trigger_price == row.trigger_price
+        assert one.quantity == row.quantity
+        assert one.drop_pct == row.drop_pct
 
 
 def test_calculate_grid_levels_short():

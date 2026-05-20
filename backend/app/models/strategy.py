@@ -31,7 +31,8 @@ class Strategy(Base):
     grid_interval_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # drop interval multiplier
     position_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # position size multiplier per layer
     cumulative_loss_threshold_u: Mapped[float] = mapped_column(Float, default=0.0)  # 条件止损名义亏损额 U；0=不挂止损单
-    reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # reopen after TP/SL close
+    stop_loss_close_pct: Mapped[float] = mapped_column(Float, default=100.0)  # 触发止损时平仓当前持仓比例%；0=不挂止损单
+    reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # 止盈全平后是否自动重开首单（止损不减仓重开）
 
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'

@@ -73,7 +73,9 @@ class StrategyScheduler:
                             order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
                     n_open = len(open_orders or [])
                     n_algo_sl = 0
-                    if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0:
+                    if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0 and float(
+                        getattr(s, "stop_loss_close_pct", 0) or 0
+                    ) > 0:
                         try:
                             algo_rows = await exchange.fetch_open_algo_orders(s.symbol)
                         except Exception as e:
