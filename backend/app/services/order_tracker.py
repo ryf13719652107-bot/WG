@@ -86,17 +86,9 @@ class OrderTracker:
             if o.purpose == purpose
         ]
 
-    async def check_order(self, exchange, order_id: str, symbol: str) -> Optional[CachedOrder]:
-        """Check a single order's status from exchange and update cache. Returns updated CachedOrder."""
-        co = self._orders.get(order_id)
-        if not co:
-            return None
-        try:
-            raw = await exchange.fetch_order(order_id, symbol)
-        except Exception as e:
-            logger.debug("fetch_order %s failed: %s", order_id, e)
-            return co
-
+    @staticmethod
+    def _raw_order_is_filled(raw: dict, co: CachedOrder) -> bool:
+        """从 ccxt/所侧原始订单判断是否已完全成交（OKX 等字段不全时也能识别）。"""
         status_str = (raw.get("status") or "").lower()
         info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
         if isinstance(info, dict):
@@ -104,39 +96,68 @@ class OrderTracker:
             if st2 and st2 not in ("none", "null"):
                 if not status_str or status_str in ("open", "live"):
                     status_str = st2
-        co.filled = float(raw.get("filled", 0) or 0)
-        avg_price = BaseExchangeService.avg_fill_price_from_order(raw)
-        if avg_price > 0:
-            co.price = avg_price
+
+        filled = float(raw.get("filled", 0) or 0)
+        if isinstance(info, dict):
+            try:
+                acc = float(info.get("accFillSz") or 0)
+                if acc > filled:
+                    filled = acc
+            except (TypeError, ValueError):
+                pass
+
         amount = float(raw.get("amount", 0) or 0) or float(co.amount or 0)
+        if isinstance(info, dict):
+            try:
+                sz = float(info.get("sz") or 0)
+                if sz > amount:
+                    amount = sz
+            except (TypeError, ValueError):
+                pass
+
         try:
             rem_raw = raw.get("remaining")
             rem = float(rem_raw) if rem_raw is not None and rem_raw != "" else None
         except (TypeError, ValueError):
             rem = None
 
-        filled_done = status_str in ("closed", "filled")
-        if not filled_done and amount > 1e-16:
-            if co.filled >= amount * 0.998:
-                filled_done = True
-            if rem is not None and rem <= max(amount * 0.002, 1e-12) and co.filled > 0:
-                filled_done = True
-        if isinstance(info, dict) and str(info.get("state", "")).lower() == "filled":
-            filled_done = True
-        # OKX：部分响应里 amount/remaining 不全，用 accFillSz 与 sz 判断已完全成交
-        if isinstance(info, dict) and not filled_done:
+        if status_str in ("closed", "filled", "effective"):
+            return True
+        if isinstance(info, dict):
+            if str(info.get("state", "")).lower() in ("filled", "effective"):
+                return True
+            fs = str(info.get("fillState") or "").lower()
+            if fs in ("filled", "full_fill", "full"):
+                return True
+        if amount > 1e-16:
+            if filled >= amount * 0.998:
+                return True
+            if rem is not None and rem <= max(amount * 0.002, 1e-12) and filled > 0:
+                return True
+        return False
+
+    def _apply_raw_to_co(self, co: CachedOrder, raw: dict) -> CachedOrder:
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        co.filled = float(raw.get("filled", 0) or 0)
+        if isinstance(info, dict):
             try:
                 acc = float(info.get("accFillSz") or 0)
-                sz = float(info.get("sz") or 0)
-                if sz > 1e-16 and acc >= sz * 0.998:
-                    filled_done = True
+                if acc > co.filled:
+                    co.filled = acc
             except (TypeError, ValueError):
                 pass
-            st = str(info.get("state") or "").lower()
-            if st in ("filled", "effective"):
-                filled_done = True
+        avg_price = BaseExchangeService.avg_fill_price_from_order(raw)
+        if avg_price > 0:
+            co.price = avg_price
 
-        if filled_done:
+        status_str = (raw.get("status") or "").lower()
+        if isinstance(info, dict):
+            st2 = str(info.get("state") or info.get("ordStatus") or "").lower()
+            if st2 and st2 not in ("none", "null"):
+                if not status_str or status_str in ("open", "live"):
+                    status_str = st2
+
+        if self._raw_order_is_filled(raw, co):
             co.status = OrderState.FILLED
         elif status_str in ("canceled", "cancelled"):
             co.status = OrderState.CANCELED
@@ -145,6 +166,22 @@ class OrderTracker:
         elif status_str == "open" and co.filled > 0:
             co.status = OrderState.PARTIALLY_FILLED
         return co
+
+    async def check_order(self, exchange, order_id: str, symbol: str) -> Optional[CachedOrder]:
+        """Check a single order's status from exchange and update cache. Returns updated CachedOrder."""
+        co = self._orders.get(order_id)
+        if not co:
+            return None
+        sym = (co.symbol or symbol or "").strip() or symbol
+        try:
+            raw = await exchange.fetch_order(order_id, sym)
+        except Exception as e:
+            if co.purpose == "tp":
+                logger.warning("fetch_order tp %s failed (symbol=%s): %s", order_id, sym, e)
+            else:
+                logger.debug("fetch_order %s failed: %s", order_id, e)
+            return co
+        return self._apply_raw_to_co(co, raw)
 
     async def check_all_pending(self, exchange, strategy_id: int) -> dict[str, CachedOrder]:
         """Check all pending orders for a strategy. Returns dict of order_id -> updated CachedOrder."""

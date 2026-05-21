@@ -71,6 +71,20 @@ class PositionSyncService:
                     if (sym_key, side_key) in exchange_map:
                         continue
 
+                    sym0 = legs[0].symbol
+                    if hasattr(exchange, "cancel_all_pending_orders_for_symbol"):
+                        try:
+                            hedge = getattr(exchange, "hedge_mode", True)
+                            pos_filter = side_key if hedge else None
+                            n_cancel = await exchange.cancel_all_pending_orders_for_symbol(sym0, pos_filter)
+                            if n_cancel:
+                                logger.info(
+                                    "Sync: cancelled %d pending orders for %s %s before closing DB leg",
+                                    n_cancel, sym_key, side_key,
+                                )
+                        except Exception as e:
+                            logger.warning("Sync: cancel pending for %s %s: %s", sym_key, side_key, e)
+
                     exit_price = float(legs[0].mark_price or legs[0].entry_price or 0)
                     try:
                         sym0 = legs[0].symbol

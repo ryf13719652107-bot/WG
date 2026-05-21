@@ -426,6 +426,11 @@ class OkxService(BaseExchangeService):
             logger.warning("OKX close_position: no contracts for %s %s", symbol, side)
             return {}
 
+        total = await self.normalize_order_amount(symbol, total)
+        if total <= 0:
+            logger.warning("OKX close_position: normalized qty is 0 for %s %s", symbol, side)
+            return {}
+
         close_side = "sell" if side == "long" else "buy"
         position_side = "LONG" if side == "long" else "SHORT"
         return await self.create_market_order(

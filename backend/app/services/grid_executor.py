@@ -210,6 +210,119 @@ class GridExecutor:
         """见 ``BaseExchangeService.avg_fill_price_from_order``。"""
         return BaseExchangeService.avg_fill_price_from_order(raw)
 
+    async def _exchange_leg_contracts(self, exchange, symbol: str, direction: str) -> float:
+        """该策略方向在交易所的持仓张数（0 表示已平仓）。"""
+        side = (direction or "").strip().lower()
+        formatted = symbol
+        fmt = getattr(exchange, "_format_symbol", None)
+        if callable(fmt):
+            try:
+                formatted = fmt(symbol)
+            except Exception:
+                formatted = symbol
+        try:
+            raw = await exchange.fetch_positions([symbol])
+        except Exception as e:
+            logger.debug("fetch_positions for leg flat check %s: %s", symbol, e)
+            return -1.0
+        total = 0.0
+        for rp in raw or []:
+            if not BaseExchangeService.position_row_matches_leg(rp, symbol, side, formatted):
+                continue
+            total += BaseExchangeService.position_row_contracts_abs(rp)
+        return total
+
+    async def _tp_order_still_open_on_exchange(
+        self, exchange, symbol: str, tp_order_id: str,
+    ) -> bool | None:
+        """止盈单是否仍在挂单中。返回 None 表示无法判断。"""
+        oid = (tp_order_id or "").strip()
+        if not oid:
+            return None
+        try:
+            oo = await exchange.fetch_open_orders(symbol)
+        except Exception as e:
+            logger.debug("fetch_open_orders for tp check %s: %s", symbol, e)
+            return None
+        for row in oo or []:
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            row_oid = str(row.get("id") or row.get("orderId") or "").strip()
+            if isinstance(info, dict) and not row_oid:
+                row_oid = str(info.get("ordId") or "").strip()
+            if row_oid == oid:
+                return True
+        return False
+
+    async def _infer_tp_filled_from_exchange_flat(
+        self,
+        exchange,
+        strategy,
+        symbol: str,
+        positions: list,
+        by_id: dict,
+    ):
+        """REST 查单失败或滞后时：持仓已平且止盈单不在挂单中 → 按止盈成交处理。"""
+        tp_oid = ""
+        tp_price_hint = 0.0
+        for p in positions:
+            o = (p.tp_limit_order_id or "").strip()
+            if o:
+                tp_oid = o
+                tp_price_hint = float(p.take_profit_price or 0) or 0.0
+                break
+        if not tp_oid:
+            return None
+
+        ex_qty = await self._exchange_leg_contracts(exchange, symbol, strategy.direction)
+        if ex_qty < 0 or ex_qty > 1e-12:
+            return None
+
+        still_open = await self._tp_order_still_open_on_exchange(exchange, symbol, tp_oid)
+        if still_open is True:
+            return None
+
+        co = by_id.get(tp_oid) or order_tracker.get(tp_oid)
+        if not co:
+            tp_side_hint = "sell" if strategy.direction == "long" else "buy"
+            order_tracker.add(
+                tp_oid,
+                symbol,
+                tp_side_hint,
+                "limit",
+                float(positions[0].quantity or 0),
+                tp_price_hint,
+                strategy.id,
+                "tp",
+            )
+            co = order_tracker.get(tp_oid)
+
+        if not co:
+            return None
+
+        try:
+            raw = await exchange.fetch_order(tp_oid, co.symbol or symbol)
+            co = order_tracker._apply_raw_to_co(co, raw)
+            if co.status == OrderState.FILLED:
+                return co
+        except Exception as e:
+            logger.info(
+                "TP infer: fetch_order %s failed while leg flat (%s), treating as filled",
+                tp_oid,
+                e,
+            )
+
+        if still_open is False:
+            co.status = OrderState.FILLED
+            if co.price <= 0 and tp_price_hint > 0:
+                co.price = tp_price_hint
+            strategy_log_service.warning(
+                strategy.id,
+                f"止盈推断: {symbol} 交易所持仓已平且止盈限价单不在挂单中，按止盈成交处理 "
+                f"(订单ID={tp_oid[:20]}{'…' if len(tp_oid) > 20 else ''})",
+            )
+            return co
+        return None
+
     async def _filled_exit_price(self, exchange, order_id: str, sym: str) -> float:
         """从交易所拉取已成交订单的均价/成交价，用于交易记录 exit_price。"""
         try:
@@ -763,10 +876,15 @@ class GridExecutor:
             if o.status == OrderState.FILLED:
                 ref_tp = o
                 break
-            updated = await order_tracker.check_order(exchange, o.order_id, symbol)
+            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol or symbol)
             if updated and updated.status == OrderState.FILLED:
                 ref_tp = updated
                 break
+
+        if ref_tp is None:
+            ref_tp = await self._infer_tp_filled_from_exchange_flat(
+                exchange, strategy, symbol, positions, by_id,
+            )
 
         if ref_tp is None:
             return False

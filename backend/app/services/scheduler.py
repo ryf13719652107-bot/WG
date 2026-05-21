@@ -37,6 +37,7 @@ class StrategyScheduler:
         self._order_watch_tasks: dict[int, asyncio.Task] = {}
         self._running = False
         self._strategy_locks: dict[int, asyncio.Lock] = {}
+        self._pending_strategy_ticks: set[int] = set()
 
     def _get_strategy_lock(self, strategy_id: int) -> asyncio.Lock:
         if strategy_id not in self._strategy_locks:
@@ -69,8 +70,15 @@ class StrategyScheduler:
                         amount = float(oo.get("amount", 0) or 0)
                         price = float(oo.get("price", 0) or 0)
                         if oid and amount > 0:
-                            purpose = "tp" if side != s.direction.lower() else "grid_add"
-                            order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
+                            d = (s.direction or "").lower()
+                            if d == "long":
+                                purpose = "tp" if side == "sell" else ("grid_add" if side == "buy" else "")
+                            elif d == "short":
+                                purpose = "tp" if side == "buy" else ("grid_add" if side == "sell" else "")
+                            else:
+                                purpose = "tp" if side != d else "grid_add"
+                            if purpose:
+                                order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
                     n_open = len(open_orders or [])
                     n_algo_sl = 0
                     if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0 and float(
@@ -488,7 +496,8 @@ class StrategyScheduler:
     async def _execute_strategy(self, strategy_id: int):
         lock = self._get_strategy_lock(strategy_id)
         if lock.locked():
-            logger.debug("Strategy %d already executing, skip", strategy_id)
+            self._pending_strategy_ticks.add(strategy_id)
+            logger.debug("Strategy %d already executing, queued rerun", strategy_id)
             return
         async with lock:
             async with _STRATEGY_SEMAPHORE:
@@ -496,6 +505,9 @@ class StrategyScheduler:
                     await self._execute_strategy_impl(strategy_id)
                 except Exception as e:
                     logger.error("Strategy %d unhandled error: %s", strategy_id, e, exc_info=True)
+        if strategy_id in self._pending_strategy_ticks:
+            self._pending_strategy_ticks.discard(strategy_id)
+            asyncio.create_task(self._execute_strategy(strategy_id))
 
     async def _execute_strategy_impl(self, strategy_id: int):
         async with async_session() as session:

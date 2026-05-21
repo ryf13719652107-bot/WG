@@ -23,6 +23,27 @@ def _norm_sym(s: str) -> str:
     return BaseExchangeService._norm_sym(s)
 
 
+def _flatten_cancel_open_order_task(exchange, row: dict, symbol: str):
+    """为紧急平仓/删策略构造单笔撤单协程（OKX 条件单须走 cancel_algo_order）。"""
+    info = row.get("info") if isinstance(row.get("info"), dict) else {}
+    oid = str(row.get("id") or row.get("orderId") or "").strip()
+    algo = str(row.get("algoId") or "").strip()
+    if isinstance(info, dict):
+        if not oid:
+            oid = str(info.get("ordId") or "").strip()
+        if not algo:
+            algo = str(info.get("algoId") or "").strip()
+    typ = str(row.get("type") or row.get("orderType") or "").lower()
+    is_cond = bool(algo) or "stop" in typ or "conditional" in typ or "trigger" in typ
+    if is_cond and hasattr(exchange, "cancel_algo_order"):
+        aid = algo or oid
+        if aid:
+            return exchange.cancel_algo_order(aid, symbol)
+    if oid:
+        return exchange.cancel_order(oid, symbol)
+    return None
+
+
 async def _flatten_strategy_orders_and_positions(
     strategy: Strategy,
     db: AsyncSession,
@@ -93,9 +114,9 @@ async def _flatten_strategy_orders_and_positions(
         for oo in oo_list or []:
             if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
                 continue
-            oid = str(oo.get("id") or oo.get("orderId") or oo.get("algoId") or "").strip()
-            if oid:
-                oo_cancel.append(exchange.cancel_order(oid, symbol))
+            task = _flatten_cancel_open_order_task(exchange, oo, symbol)
+            if task is not None:
+                oo_cancel.append(task)
         if oo_cancel:
             await asyncio.gather(*oo_cancel, return_exceptions=True)
     except Exception as e:
@@ -120,15 +141,18 @@ async def _flatten_strategy_orders_and_positions(
     # 以交易所实时持仓为准（OKX 合约张数、hedge 下 side 常与 DB 有偏差），避免紧急平仓数量为 0 或下单被拒
     exchange_qty = 0.0
     exchange_entry_cost = 0.0
+    formatted_sym = symbol
+    fmt = getattr(exchange, "_format_symbol", None)
+    if callable(fmt):
+        try:
+            formatted_sym = fmt(symbol)
+        except Exception:
+            formatted_sym = symbol
+    d = direction.lower()
     try:
         raw_pos = await exchange.fetch_positions([symbol])
-        want = BaseExchangeService._norm_sym(symbol)
-        d = direction.lower()
         for rp in raw_pos or []:
-            if BaseExchangeService._norm_sym(str(rp.get("symbol") or "")) != want:
-                continue
-            p_side = BaseExchangeService.position_row_side_lower(rp)
-            if p_side != d:
+            if not BaseExchangeService.position_row_matches_leg(rp, symbol, d, formatted_sym):
                 continue
             c = BaseExchangeService.position_row_contracts_abs(rp)
             exchange_qty += c
@@ -140,71 +164,84 @@ async def _flatten_strategy_orders_and_positions(
 
     ex_avg_entry = exchange_entry_cost / exchange_qty if exchange_qty > 1e-12 else 0.0
 
-    close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
-    close_qty = await exchange.normalize_order_amount(symbol, close_qty)
+    raw_close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
+    try:
+        close_qty = await exchange.normalize_order_amount(symbol, raw_close_qty)
+    except Exception as e:
+        logging.warning("_flatten_strategy normalize_order_amount strategy=%d: %s", strategy_id, e)
+        close_qty = raw_close_qty
 
     close_success = False
     exit_price = 0.0
-    if close_qty > 1e-12:
+    has_position_hint = exchange_qty > 1e-12 or total_qty > 1e-12
+
+    def _log_close_success(msg: str) -> None:
+        if close_reason == "panic_close":
+            strategy_log_service.success(strategy_id, msg)
+        else:
+            strategy_log_service.success(strategy_id, msg)
+
+    def _log_close_error(msg: str) -> None:
+        if close_reason == "panic_close":
+            strategy_log_service.error(strategy_id, msg)
+        else:
+            strategy_log_service.error(strategy_id, msg)
+
+    if has_position_hint:
+        # 优先 close_position：按交易所实时张数平仓，避免 normalize 为 0 或数量与 DB 不一致
         try:
-            order = await exchange.create_market_order(
-                symbol, close_side, close_qty,
-                reduce_only=True, position_side=position_side,
-            )
-            close_success = True
-            exit_price = BaseExchangeService.avg_fill_price_from_order(order)
-            if close_reason == "panic_close":
-                strategy_log_service.success(
-                    strategy_id,
-                    f"紧急平仓成功: {symbol} 数量={close_qty:.4f} 价格={exit_price:.4f}",
-                )
-            else:
-                strategy_log_service.success(
-                    strategy_id,
-                    f"策略删除平仓: {symbol} 数量={close_qty:.4f} 价格={exit_price:.4f}",
+            order_cp = await exchange.close_position(symbol, direction)
+            if order_cp:
+                close_success = True
+                exit_price = BaseExchangeService.avg_fill_price_from_order(order_cp)
+                _log_close_success(
+                    f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(close_position): "
+                    f"{symbol} 价格={exit_price:.4f}",
                 )
         except Exception as e:
-            logging.error("_flatten_strategy market close failed strategy=%d %s: %s", strategy_id, symbol, e)
+            logging.error("_flatten_strategy close_position strategy=%d %s: %s", strategy_id, symbol, e)
+
+        if not close_success and close_qty > 1e-12:
+            try:
+                order = await exchange.create_market_order(
+                    symbol, close_side, close_qty,
+                    reduce_only=True, position_side=position_side,
+                )
+                close_success = True
+                exit_price = BaseExchangeService.avg_fill_price_from_order(order)
+                _log_close_success(
+                    f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功: "
+                    f"{symbol} 数量={close_qty:.4f} 价格={exit_price:.4f}",
+                )
+            except Exception as e:
+                logging.error("_flatten_strategy market close failed strategy=%d %s: %s", strategy_id, symbol, e)
+                _log_close_error(
+                    f"{'紧急平仓' if close_reason == 'panic_close' else '删除策略平仓'}失败: {e}",
+                )
+
+        if not close_success and exchange_qty > 1e-12:
             try:
                 order2 = await exchange.close_position(symbol, direction)
                 if order2:
                     close_success = True
                     exit_price = BaseExchangeService.avg_fill_price_from_order(order2)
-                    if close_reason == "panic_close":
-                        strategy_log_service.success(
-                            strategy_id,
-                            f"紧急平仓成功(交易所 close_position): {symbol} 价格={exit_price:.4f}",
-                        )
-                    else:
-                        strategy_log_service.success(
-                            strategy_id,
-                            f"策略删除平仓成功(交易所 close_position): {symbol} 价格={exit_price:.4f}",
-                        )
-                else:
-                    if close_reason == "panic_close":
-                        strategy_log_service.error(
-                            strategy_id,
-                            f"紧急平仓失败: {e}（close_position 未找到持仓或返回空）",
-                        )
-                    else:
-                        strategy_log_service.error(
-                            strategy_id,
-                            f"删除策略平仓失败: {e}（close_position 未找到持仓或返回空）",
-                        )
+                    _log_close_success(
+                        f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(二次 close_position): "
+                        f"{symbol} 价格={exit_price:.4f}",
+                    )
             except Exception as e2:
-                logging.error("_flatten_strategy close_position fallback failed strategy=%d: %s", strategy_id, e2)
-                if close_reason == "panic_close":
-                    strategy_log_service.error(strategy_id, f"紧急平仓失败: {e}；备用: {e2}")
-                else:
-                    strategy_log_service.error(strategy_id, f"删除策略平仓失败: {e}；备用: {e2}")
-    if exit_price <= 0 and close_qty > 1e-12:
+                logging.error("_flatten_strategy close_position retry strategy=%d: %s", strategy_id, e2)
+                _log_close_error(
+                    f"{'紧急平仓' if close_reason == 'panic_close' else '删除策略平仓'}失败(二次): {e2}",
+                )
+    if exit_price <= 0 and (close_qty > 1e-12 or exchange_qty > 1e-12):
         try:
             tk = await exchange.fetch_ticker(symbol)
             exit_price = float(tk.get("last", 0) or tk.get("close", 0) or 0)
         except Exception as e:
             logging.debug("_flatten_strategy ticker exit_price strategy=%d: %s", strategy_id, e)
 
-    if close_qty <= 1e-12:
+    if not has_position_hint:
         close_success = True
         if close_reason == "panic_close":
             strategy_log_service.info(strategy_id, "紧急平仓: 无持仓需要平仓")
@@ -212,38 +249,47 @@ async def _flatten_strategy_orders_and_positions(
             strategy_log_service.info(strategy_id, "删除策略: 无持仓需要平仓")
 
     now = now_beijing()
-    for p in positions:
-        ep = exit_price if exit_price > 0 else (p.mark_price or p.entry_price)
-        pnl = (ep - p.entry_price) * p.quantity if p.side == "long" else (p.entry_price - ep) * p.quantity
-        pct = (
-            ((ep - p.entry_price) / p.entry_price * 100)
-            if p.side == "long" and p.entry_price > 0
-            else ((p.entry_price - ep) / p.entry_price * 100)
-            if p.entry_price > 0
-            else 0
-        )
-        trade = Trade(
-            strategy_id=p.strategy_id,
-            account_id=strategy.account_id,
-            symbol=p.symbol,
-            side=p.side,
-            quantity=p.quantity,
-            entry_price=p.entry_price,
-            exit_price=ep,
-            realized_pnl=pnl,
-            pnl_pct=round(pct, 2),
-            entry_time=p.opened_at or now,
-            exit_time=now,
-            layer=p.layer,
-            grid_level=p.grid_level if hasattr(p, "grid_level") else 0,
-            close_reason=close_reason,
-        )
-        db.add(trade)
-        p.closed_at = now
+    qty_for_report = close_qty if close_qty > 1e-12 else (exchange_qty if exchange_qty > 1e-12 else total_qty)
 
-    if not positions and close_success and close_qty > 1e-12 and exit_price > 0:
+    # 交易所未确认平仓时勿关本地持仓，避免「界面已平、所里仍有仓」
+    if close_success:
+        for p in positions:
+            ep = exit_price if exit_price > 0 else (p.mark_price or p.entry_price)
+            pnl = (ep - p.entry_price) * p.quantity if p.side == "long" else (p.entry_price - ep) * p.quantity
+            pct = (
+                ((ep - p.entry_price) / p.entry_price * 100)
+                if p.side == "long" and p.entry_price > 0
+                else ((p.entry_price - ep) / p.entry_price * 100)
+                if p.entry_price > 0
+                else 0
+            )
+            trade = Trade(
+                strategy_id=p.strategy_id,
+                account_id=strategy.account_id,
+                symbol=p.symbol,
+                side=p.side,
+                quantity=p.quantity,
+                entry_price=p.entry_price,
+                exit_price=ep,
+                realized_pnl=pnl,
+                pnl_pct=round(pct, 2),
+                entry_time=p.opened_at or now,
+                exit_time=now,
+                layer=p.layer,
+                grid_level=p.grid_level if hasattr(p, "grid_level") else 0,
+                close_reason=close_reason,
+            )
+            db.add(trade)
+            p.closed_at = now
+    elif has_position_hint and close_reason == "panic_close":
+        strategy_log_service.warning(
+            strategy_id,
+            "紧急平仓: 交易所未确认平仓，本地持仓记录保持不变，请重试或到交易所手动平仓",
+        )
+
+    if not positions and close_success and qty_for_report > 1e-12 and exit_price > 0:
         ep_in = ex_avg_entry if ex_avg_entry > 0 else exit_price
-        qty0 = close_qty
+        qty0 = qty_for_report
         is_long = direction.lower() == "long"
         pnl0 = (exit_price - ep_in) * qty0 if is_long else (ep_in - exit_price) * qty0
         pct0 = (
@@ -273,8 +319,7 @@ async def _flatten_strategy_orders_and_positions(
         )
 
     await db.flush()
-    qty_report = close_qty if close_qty > 1e-12 else total_qty
-    return close_success, qty_report, exit_price
+    return close_success, qty_for_report, exit_price
 
 
 @router.post("", response_model=StrategyResponse)
@@ -416,6 +461,8 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/{strategy_id}/panic-close")
 async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     """Emergency close: 只处理当前策略的持仓和订单，平仓后暂停策略."""
+    import logging
+
     strategy = await db.get(Strategy, strategy_id)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
@@ -423,18 +470,31 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
     if not await get_exchange_service(strategy.account_id):
         raise HTTPException(status_code=502, detail="Exchange service not available")
 
-    close_success, total_qty, exit_price = await _flatten_strategy_orders_and_positions(
-        strategy,
-        db,
-        close_reason="panic_close",
-        use_order_tracker=True,
-    )
-
     symbol = strategy.symbol
-    await strategy_scheduler.remove_strategy(strategy_id)
-    strategy.status = "stopped"
-    await db.commit()
+    direction = strategy.direction
 
+    # 先停调度与 WS 监听，避免与执行器同时下单/撤单导致异常或未平仓
+    try:
+        await strategy_scheduler.remove_strategy(strategy_id)
+    except Exception as e:
+        logging.warning("panic_close remove_strategy strategy=%d: %s", strategy_id, e)
+
+    try:
+        await db.refresh(strategy)
+        close_success, total_qty, exit_price = await _flatten_strategy_orders_and_positions(
+            strategy,
+            db,
+            close_reason="panic_close",
+            use_order_tracker=True,
+        )
+        strategy.status = "stopped"
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logging.exception("panic_close strategy=%d failed", strategy_id)
+        raise HTTPException(status_code=500, detail=f"紧急平仓失败: {e}")
+
+    err_msg = None if close_success else "交易所未确认平仓，请查看策略日志并在交易所核对持仓"
     return {
         "closed": 1 if close_success else 0,
         "failed": 0 if close_success else 1,
@@ -442,6 +502,15 @@ async def panic_close_strategy(strategy_id: int, db: AsyncSession = Depends(get_
         "quantity": total_qty,
         "exit_price": exit_price,
         "id": strategy_id,
+        "results": [
+            {
+                "symbol": symbol,
+                "side": direction,
+                "status": "closed" if close_success else "failed",
+                "exit_price": exit_price if close_success else None,
+                "error": err_msg,
+            }
+        ],
     }
 
 
