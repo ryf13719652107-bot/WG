@@ -311,7 +311,8 @@ class GridExecutor:
                 e,
             )
 
-        if still_open is False:
+        # still_open=None：fetch_open_orders 失败时，持仓已平仍按止盈处理
+        if still_open is not True:
             co.status = OrderState.FILLED
             if co.price <= 0 and tp_price_hint > 0:
                 co.price = tp_price_hint
@@ -569,6 +570,18 @@ class GridExecutor:
             await order_tracker.check_all_pending(exchange, strategy.id)
 
         if not open_positions:
+            # 常见于 sync/止盈后 DB 已平但残留加仓限价；重开前先扫尾撤单
+            try:
+                purged = await self._purge_exchange_open_orders(
+                    exchange, symbol, strategy.id, strategy.direction,
+                )
+                if purged > 0:
+                    strategy_log_service.info(
+                        strategy.id,
+                        f"无本地持仓，重开首单前已撤销 {symbol} 残留挂单约 {purged} 笔",
+                    )
+            except Exception as e:
+                logger.warning("purge before reopen strategy=%d: %s", strategy.id, e)
             await self._open_initial(session, strategy, symbol, exchange, current_price)
             return
 
