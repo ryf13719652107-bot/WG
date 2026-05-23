@@ -583,7 +583,7 @@ class StrategyScheduler:
                     logger.error("Strategy %d unhandled error: %s", strategy_id, e, exc_info=True)
         if strategy_id in self._pending_strategy_ticks:
             self._pending_strategy_ticks.discard(strategy_id)
-            await self._execute_strategy(strategy_id)
+            asyncio.create_task(self._execute_strategy(strategy_id))
 
     async def _execute_strategy_impl(self, strategy_id: int):
         async with async_session() as session:

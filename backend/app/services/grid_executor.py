@@ -1,7 +1,7 @@
 """Grid strategy executor — state machine that drives the martingale grid lifecycle."""
 import asyncio
 import logging
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Optional
 
 from ..config import now_beijing
@@ -1232,6 +1232,7 @@ class GridExecutor:
 
         if has_tp_oid and order_tracker.has_active_tp_for_symbol(strategy.id, symbol):
             tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
+            qty_mismatch = False
             for tp_o in tp_orders:
                 if GridExecutor._order_symbol_matches(tp_o.symbol, symbol):
                     if total_qty > 0 and abs(tp_o.amount - total_qty) > total_qty * 0.01:
@@ -1240,11 +1241,12 @@ class GridExecutor:
                             f"止盈数量不匹配: {symbol} 止盈单数量={tp_o.amount:.4f} "
                             f"当前持仓={total_qty:.4f}，需要刷新止盈",
                         )
+                        qty_mismatch = True
                         break
-            else:
+            if not qty_mismatch:
                 return
 
-        if has_tp_oid:
+        if has_tp_oid and not qty_mismatch:
             for p in positions:
                 oid = (getattr(p, "tp_limit_order_id", None) or "").strip()
                 if oid:
