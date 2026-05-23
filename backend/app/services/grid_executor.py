@@ -1668,22 +1668,48 @@ class GridExecutor:
             if GridExecutor._order_symbol_matches(pf.symbol, symbol) and pf.order_id not in by_id:
                 by_id[pf.order_id] = pf
 
+        for o in by_id.values():
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
+                continue
+            if o.status == OrderState.FILLED:
+                break
+        else:
+            tp_oids_to_check = [
+                o for o in by_id.values()
+                if GridExecutor._order_symbol_matches(o.symbol, symbol)
+                and o.status in (OrderState.PENDING, OrderState.PARTIALLY_FILLED)
+            ]
+            for o in tp_oids_to_check:
+                try:
+                    updated = await order_tracker.check_order(exchange, o.order_id, o.symbol or symbol)
+                    if updated and updated.status == OrderState.FILLED:
+                        break
+                except Exception:
+                    pass
+            else:
+                for p in positions:
+                    oid = (p.tp_limit_order_id or "").strip()
+                    if not oid:
+                        continue
+                    try:
+                        raw = await exchange.fetch_order(oid, symbol)
+                        if raw:
+                            filled_qty = float(raw.get("filled", 0) or 0)
+                            if filled_qty > 0:
+                                co = order_tracker.get(oid)
+                                if co:
+                                    order_tracker._apply_raw_to_co(co, raw)
+                                    if co.status == OrderState.FILLED:
+                                        break
+                    except Exception:
+                        pass
+
         ref_tp = None
         for o in by_id.values():
             if not GridExecutor._order_symbol_matches(o.symbol, symbol):
                 continue
             if o.status == OrderState.FILLED:
                 ref_tp = o
-                break
-            if o.status == OrderState.PARTIALLY_FILLED:
-                updated = await order_tracker.check_order(exchange, o.order_id, o.symbol or symbol)
-                if updated and updated.status == OrderState.FILLED:
-                    ref_tp = updated
-                    break
-                continue
-            updated = await order_tracker.check_order(exchange, o.order_id, o.symbol or symbol)
-            if updated and updated.status == OrderState.FILLED:
-                ref_tp = updated
                 break
 
         if ref_tp is None:

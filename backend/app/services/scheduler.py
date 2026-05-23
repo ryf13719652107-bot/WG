@@ -376,13 +376,16 @@ class StrategyScheduler:
         job_id = f"strategy_{strategy_id}"
         if self._aps.get_job(job_id):
             self._aps.remove_job(job_id)
+        import datetime
         self._aps.add_job(
             self._execute_strategy,
             "interval",
             seconds=_STRATEGY_TICK_SECONDS,
             id=job_id,
             args=[strategy_id],
-            next_run_time=None,  # start immediately
+            next_run_time=datetime.datetime.now(tz=BEIJING_TZ),
+            max_instances=1,
+            coalesce=True,
         )
         self._strategy_jobs[strategy_id] = job_id
 
@@ -580,7 +583,7 @@ class StrategyScheduler:
                     logger.error("Strategy %d unhandled error: %s", strategy_id, e, exc_info=True)
         if strategy_id in self._pending_strategy_ticks:
             self._pending_strategy_ticks.discard(strategy_id)
-            asyncio.create_task(self._execute_strategy(strategy_id))
+            await self._execute_strategy(strategy_id)
 
     async def _execute_strategy_impl(self, strategy_id: int):
         async with async_session() as session:
