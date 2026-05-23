@@ -24,6 +24,7 @@ from .sync_service import position_sync_service
 logger = logging.getLogger(__name__)
 
 _STRATEGY_TICK_SECONDS = 30  # 兜底轮询(WS实时监听已覆盖订单成交)
+_STRATEGY_FAST_TICK_SECONDS = 8  # WS断开后的快速轮询间隔
 _STRATEGY_SEMAPHORE = asyncio.Semaphore(100)
 
 
@@ -38,6 +39,8 @@ class StrategyScheduler:
         self._running = False
         self._strategy_locks: dict[int, asyncio.Lock] = {}
         self._pending_strategy_ticks: set[int] = set()
+        self._ws_disconnected: set[int] = set()
+        self._fast_poll_task: asyncio.Task | None = None
 
     def _get_strategy_lock(self, strategy_id: int) -> asyncio.Lock:
         if strategy_id not in self._strategy_locks:
@@ -301,8 +304,73 @@ class StrategyScheduler:
                     logger.warning("Order watcher %d repeated errors (%d): %s — retry in %.1fs", strategy_id, consecutive_errors, e, delay)
                 if consecutive_errors >= max_consecutive_errors:
                     logger.error("Order watcher %d exceeded max errors, falling back to REST polling", strategy_id)
+                    self._ws_disconnected.add(strategy_id)
+                    self._ensure_fast_poll_running()
+                    strategy_log_service.warning(
+                        strategy_id,
+                        "订单WS监听连续失败，已切换到快速REST轮询模式",
+                    )
                     break
                 await asyncio.sleep(delay)
+
+    def _ensure_fast_poll_running(self):
+        if self._fast_poll_task is not None and not self._fast_poll_task.done():
+            return
+        self._fast_poll_task = asyncio.create_task(self._fast_poll_loop())
+
+    async def _fast_poll_loop(self):
+        """WS断开后的快速轮询：以更短间隔执行断连策略的tick。"""
+        while self._running and self._ws_disconnected:
+            try:
+                for sid in list(self._ws_disconnected):
+                    if sid not in self._ws_disconnected:
+                        continue
+                    try:
+                        await self._execute_strategy(sid)
+                    except Exception as e:
+                        logger.debug("Fast poll strategy %d error: %s", sid, e)
+                await asyncio.sleep(_STRATEGY_FAST_TICK_SECONDS)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Fast poll loop error: %s", e)
+                await asyncio.sleep(_STRATEGY_FAST_TICK_SECONDS)
+
+    async def _try_restart_order_watcher(self, strategy_id: int):
+        """尝试重新启动WS订单监听（周期性重连）。"""
+        if strategy_id not in self._ws_disconnected:
+            return
+        exchange = self._exchange_services.get(strategy_id)
+        if not exchange:
+            return
+        if not hasattr(exchange, 'ws_exchange') or not exchange.ws_exchange:
+            return
+        async with async_session() as session:
+            strategy = await session.get(Strategy, strategy_id)
+            if not strategy or strategy.status != "running":
+                self._ws_disconnected.discard(strategy_id)
+                return
+            symbol = strategy.symbol
+
+        try:
+            ws = exchange.ws_exchange
+            ws_symbol = symbol
+            fmt = getattr(exchange, "_format_symbol", None)
+            if callable(fmt):
+                try:
+                    ws_symbol = fmt(symbol)
+                except Exception:
+                    ws_symbol = symbol
+            await ws.watch_orders(ws_symbol)
+            self._ws_disconnected.discard(strategy_id)
+            if strategy_id not in self._order_watch_tasks or self._order_watch_tasks[strategy_id].done():
+                self._order_watch_tasks[strategy_id] = asyncio.create_task(
+                    self._watch_orders_loop(strategy_id, exchange, symbol)
+                )
+            logger.info("Order watcher reconnected for strategy %d", strategy_id)
+            strategy_log_service.info(strategy_id, "订单WS监听已重新连接")
+        except Exception as e:
+            logger.debug("Order watcher reconnect attempt %d failed: %s", strategy_id, e)
 
     def _register_strategy_job(self, strategy_id: int):
         job_id = f"strategy_{strategy_id}"
@@ -356,6 +424,10 @@ class StrategyScheduler:
 
     def stop(self):
         self._running = False
+        self._ws_disconnected.clear()
+        if self._fast_poll_task and not self._fast_poll_task.done():
+            self._fast_poll_task.cancel()
+        self._fast_poll_task = None
         for task in list(self._order_watch_tasks.values()):
             if not task.done():
                 task.cancel()
@@ -422,6 +494,7 @@ class StrategyScheduler:
         self._strategy_jobs.pop(strategy_id, None)
         self._engines.pop(strategy_id, None)
         self._executors.pop(strategy_id, None)
+        self._ws_disconnected.discard(strategy_id)
         task = self._order_watch_tasks.pop(strategy_id, None)
         if task and not task.done():
             task.cancel()
@@ -573,6 +646,8 @@ class StrategyScheduler:
                 from .order_tracker import order_tracker
                 order_tracker.remove_done(strategy_id, min_age_seconds=3600)
                 health_monitor.record_success(strategy_id)
+                if strategy_id in self._ws_disconnected:
+                    asyncio.create_task(self._try_restart_order_watcher(strategy_id))
             except Exception as e:
                 logger.error("Strategy %d: processing error: %s", strategy_id, e)
                 strategy_log_service.error(strategy_id, f"执行错误 — {e}")

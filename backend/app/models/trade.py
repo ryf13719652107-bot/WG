@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Float, Integer, DateTime, ForeignKey, Index, Text
+from sqlalchemy import String, Numeric, Integer, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from ..database import Base
 
@@ -11,17 +11,17 @@ class Trade(Base):
     strategy_id: Mapped[int] = mapped_column(Integer, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True)
     account_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
     symbol: Mapped[str] = mapped_column(String(50), nullable=False)
-    side: Mapped[str] = mapped_column(String(10), nullable=False)  # 'long' or 'short'
-    quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
-    exit_price: Mapped[float] = mapped_column(Float, nullable=False)
-    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False)
-    pnl_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    entry_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    exit_price: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    realized_pnl: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
+    pnl_pct: Mapped[float] = mapped_column(Numeric(20, 8), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     exit_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     layer: Mapped[int] = mapped_column(Integer, default=0)
     grid_level: Mapped[int] = mapped_column(Integer, default=0)
-    close_reason: Mapped[str] = mapped_column(String(50), default="manual")  # 'take_profit', 'stop_loss', 'manual', 'panic_close', 'margin_stop'
+    close_reason: Mapped[str] = mapped_column(String(50), default="manual")
 
 
 Index("idx_trades_exit_time", Trade.exit_time)

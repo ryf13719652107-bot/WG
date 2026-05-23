@@ -58,11 +58,14 @@ async def init_db():
             "ALTER TABLE strategies ADD COLUMN cumulative_loss_threshold_u FLOAT DEFAULT 0.0",
             "ALTER TABLE strategies ADD COLUMN stop_loss_close_pct FLOAT DEFAULT 100.0",
             "ALTER TABLE strategies ADD COLUMN reopen_after_close BOOLEAN DEFAULT 1",
+            "ALTER TABLE strategies ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
             # Position grid tracking
             "ALTER TABLE positions ADD COLUMN grid_level INTEGER DEFAULT 0",
-            "ALTER TABLE positions ADD COLUMN grid_trigger_price FLOAT",
+            "ALTER TABLE positions ADD COLUMN grid_trigger_price NUMERIC(20,8)",
             "ALTER TABLE positions ADD COLUMN tp_limit_order_id VARCHAR(100)",
             "ALTER TABLE positions ADD COLUMN add_limit_order_id VARCHAR(100)",
+            "ALTER TABLE positions ADD COLUMN sl_algo_order_id VARCHAR(100)",
+            "ALTER TABLE positions ADD COLUMN take_profit_price NUMERIC(20,8)",
             # Trade grid tracking
             "ALTER TABLE trades ADD COLUMN grid_level INTEGER DEFAULT 0",
         ]
