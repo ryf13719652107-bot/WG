@@ -213,9 +213,9 @@ async def get_dashboard(
     result = await db.execute(trade_stmt)
     daily_trades = result.scalars().all()
     daily_trade_count = len(daily_trades)
-    daily_pnl = sum(t.realized_pnl for t in daily_trades)
-    daily_pnl_long = sum(t.realized_pnl for t in daily_trades if t.side == "long")
-    daily_pnl_short = sum(t.realized_pnl for t in daily_trades if t.side == "short")
+    daily_pnl = sum(float(t.realized_pnl) for t in daily_trades)
+    daily_pnl_long = sum(float(t.realized_pnl) for t in daily_trades if t.side == "long")
+    daily_pnl_short = sum(float(t.realized_pnl) for t in daily_trades if t.side == "short")
 
     # Win rate (today)
     winning = sum(1 for t in daily_trades if t.realized_pnl > 0)

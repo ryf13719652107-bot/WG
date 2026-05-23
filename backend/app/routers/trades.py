@@ -119,8 +119,8 @@ async def export_trades(db: AsyncSession = Depends(get_db)):
     ])
     for t in trades:
         writer.writerow([
-            t.id, t.symbol, t.side, t.quantity, t.entry_price, t.exit_price,
-            t.realized_pnl, t.pnl_pct, t.entry_time, t.exit_time, t.layer, t.close_reason
+            t.id, t.symbol, t.side, float(t.quantity), float(t.entry_price), float(t.exit_price),
+            float(t.realized_pnl), float(t.pnl_pct), t.entry_time, t.exit_time, t.layer, t.close_reason
         ])
 
     output.seek(0)

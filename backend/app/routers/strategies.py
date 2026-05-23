@@ -254,13 +254,15 @@ async def _flatten_strategy_orders_and_positions(
     # 交易所未确认平仓时勿关本地持仓，避免「界面已平、所里仍有仓」
     if close_success:
         for p in positions:
-            ep = exit_price if exit_price > 0 else (p.mark_price or p.entry_price)
-            pnl = (ep - p.entry_price) * p.quantity if p.side == "long" else (p.entry_price - ep) * p.quantity
+            ep = float(exit_price if exit_price > 0 else (p.mark_price or p.entry_price))
+            p_ep = float(p.entry_price)
+            p_qty = float(p.quantity)
+            pnl = (ep - p_ep) * p_qty if p.side == "long" else (p_ep - ep) * p_qty
             pct = (
-                ((ep - p.entry_price) / p.entry_price * 100)
-                if p.side == "long" and p.entry_price > 0
-                else ((p.entry_price - ep) / p.entry_price * 100)
-                if p.entry_price > 0
+                ((ep - p_ep) / p_ep * 100)
+                if p.side == "long" and p_ep > 0
+                else ((p_ep - ep) / p_ep * 100)
+                if p_ep > 0
                 else 0
             )
             trade = Trade(
@@ -268,8 +270,8 @@ async def _flatten_strategy_orders_and_positions(
                 account_id=strategy.account_id,
                 symbol=p.symbol,
                 side=p.side,
-                quantity=p.quantity,
-                entry_price=p.entry_price,
+                quantity=p_qty,
+                entry_price=p_ep,
                 exit_price=ep,
                 realized_pnl=pnl,
                 pnl_pct=round(pct, 2),

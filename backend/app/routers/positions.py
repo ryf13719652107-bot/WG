@@ -96,16 +96,18 @@ async def close_position(position_id: int, db: AsyncSession = Depends(get_db)):
         exit_price = float(position.mark_price or position.entry_price or 0)
 
     from ..models.trade import Trade
+    ep = float(position.entry_price)
+    pq = float(position.quantity)
     trade = Trade(
         strategy_id=position.strategy_id,
         account_id=position.account_id,
         symbol=position.symbol,
         side=position.side,
-        quantity=position.quantity,
-        entry_price=position.entry_price,
+        quantity=pq,
+        entry_price=ep,
         exit_price=exit_price,
-        realized_pnl=(exit_price - position.entry_price) * position.quantity if position.side == "long" else (position.entry_price - exit_price) * position.quantity,
-        pnl_pct=round(((exit_price - position.entry_price) / position.entry_price * 100) if position.side == "long" else ((position.entry_price - exit_price) / position.entry_price * 100), 2),
+        realized_pnl=(exit_price - ep) * pq if position.side == "long" else (ep - exit_price) * pq,
+        pnl_pct=round(((exit_price - ep) / ep * 100) if position.side == "long" else ((ep - exit_price) / ep * 100), 2),
         entry_time=position.opened_at or now_beijing(),
         exit_time=now_beijing(),
         layer=position.layer,
