@@ -1228,8 +1228,21 @@ class GridExecutor:
                 has_tp_oid = True
                 break
 
+        total_qty = sum(float(p.quantity) for p in positions)
+
         if has_tp_oid and order_tracker.has_active_tp_for_symbol(strategy.id, symbol):
-            return
+            tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
+            for tp_o in tp_orders:
+                if GridExecutor._order_symbol_matches(tp_o.symbol, symbol):
+                    if total_qty > 0 and abs(tp_o.amount - total_qty) > total_qty * 0.01:
+                        strategy_log_service.warning(
+                            strategy.id,
+                            f"止盈数量不匹配: {symbol} 止盈单数量={tp_o.amount:.4f} "
+                            f"当前持仓={total_qty:.4f}，需要刷新止盈",
+                        )
+                        break
+            else:
+                return
 
         if has_tp_oid:
             for p in positions:
@@ -1253,11 +1266,24 @@ class GridExecutor:
         avg_entry = self.engine.calculate_avg_entry(positions)
         tp_price = self.engine.calculate_tp_price(avg_entry, side)
         tp_side = "sell" if side == "long" else "buy"
-        total_qty = sum(float(p.quantity) for p in positions)
 
         if not self._check_order_qty(total_qty, symbol):
             strategy_log_service.warning(strategy.id, f"补挂止盈跳过: 数量超限({total_qty:.2f})")
             return
+
+        old_tp_oids: list[str] = []
+        for p in positions:
+            o = (getattr(p, "tp_limit_order_id", None) or "").strip()
+            if o and o not in old_tp_oids:
+                old_tp_oids.append(o)
+        for old_oid in old_tp_oids:
+            try:
+                await exchange.cancel_order(old_oid, symbol)
+            except Exception:
+                pass
+            order_tracker.discard_order(old_oid)
+        for p in positions:
+            p.tp_limit_order_id = None
 
         strategy_log_service.info(
             strategy.id,
@@ -1800,8 +1826,16 @@ class GridExecutor:
                 all_orders[add_oid_db] = co0
 
         filled_list: list[tuple[str, float, float]] = []
+        processed_oids: set[str] = set()
+        for p in positions:
+            eo = (getattr(p, "exchange_order_id", None) or "").strip()
+            if eo:
+                processed_oids.add(eo)
+
         for o in list(all_orders.values()):
             if not GridExecutor._order_symbol_matches(o.symbol, symbol):
+                continue
+            if o.order_id in processed_oids:
                 continue
             if o.status != OrderState.FILLED:
                 updated = await order_tracker.check_order(exchange, o.order_id, o.symbol or symbol)
