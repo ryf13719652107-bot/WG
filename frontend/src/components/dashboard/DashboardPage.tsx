@@ -1,8 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
-import type { Trade } from '../../types';
-import { TrendingDown, Layers, BarChart3, Activity, Target, Wallet, PiggyBank, Gauge } from 'lucide-react';
+import { TrendingDown, Layers, BarChart3, Activity, Target, Wallet, PiggyBank, Gauge, TrendingUp } from 'lucide-react';
 
 function PanelRow({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
   return (
@@ -14,24 +11,8 @@ function PanelRow({ label, value, valueClass }: { label: string; value: string; 
 }
 
 export default function DashboardPage() {
-  const { data, selectedAccountId } = useDashboardStore();
-  const [trades, setTrades] = useState<Trade[]>([]);
-
-  useEffect(() => {
-    const accountId = selectedAccountId ?? undefined;
-    const load = () => api.listTrades({ limit: 5, account_id: accountId }).then((d) => setTrades(d.trades)).catch(() => {});
-    load();
-    const timer = setInterval(load, 60000);
-    return () => clearInterval(timer);
-  }, [selectedAccountId]);
-
-  const positions = data.exchange_positions || [];
-
-  const totalUsdt = positions.reduce((s: number, p: any) => s + (p.usdt || 0), 0);
-  const longUsdt = positions.filter((p: any) => p.side === 'long').reduce((s: number, p: any) => s + (p.usdt || 0), 0);
-  const shortUsdt = totalUsdt - longUsdt;
-  const longPct = totalUsdt > 0 ? (longUsdt / totalUsdt * 100) : 0;
-  const shortPct = totalUsdt > 0 ? (shortUsdt / totalUsdt * 100) : 0;
+  const { data } = useDashboardStore();
+  const strategyStats = data.strategy_stats || [];
 
   const leverageColor = data.leverage_multiplier > 5 ? 'text-red-400' : data.leverage_multiplier > 2 ? 'text-yellow-400' : 'text-green-400';
 
@@ -69,117 +50,81 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <h3 className="text-sm font-semibold text-gray-300 mb-3">
-                当前持仓
-                {totalUsdt > 0 && (
-                  <span className="ml-3 text-xs font-normal">
-                    <span className="text-green-400">多 {longPct.toFixed(0)}%</span>
-                    <span className="text-gray-600 mx-1">|</span>
-                    <span className="text-red-400">空 {shortPct.toFixed(0)}%</span>
-                    <span className="ml-2 w-24 h-2 bg-gray-700 rounded-full inline-flex overflow-hidden align-middle">
-                      <span className="h-full bg-green-500" style={{ width: `${longPct}%` }} />
-                      <span className="h-full bg-red-500" style={{ width: `${shortPct}%` }} />
-                    </span>
-                  </span>
-                )}
-              </h3>
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">
+              <TrendingUp size={14} className="text-green-400" />
+              策略止盈/止损概览
+            </h3>
+            {strategyStats.length === 0 ? (
+              <div className="text-gray-600 text-sm py-4 text-center">暂无策略数据</div>
+            ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-gray-500 text-left">
-                      <th className="pb-2">交易对</th>
+                      <th className="pb-2">策略</th>
                       <th className="pb-2">方向</th>
-                      <th className="pb-2">USDT</th>
-                      <th className="pb-2">入场价</th>
-                      <th className="pb-2">盈亏</th>
-                      <th className="pb-2">盈亏%</th>
+                      <th className="pb-2">状态</th>
+                      <th className="pb-2">总止盈</th>
+                      <th className="pb-2">今日止盈</th>
+                      <th className="pb-2">止损</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {positions.slice(0, 10).map((p: any, i: number) => (
-                      <tr key={i} className="border-t border-gray-800">
-                        <td className="py-2 font-mono">{p.symbol}</td>
-                        <td className={p.side === 'long' ? 'text-green-400' : 'text-red-400'}>
-                          {p.side === 'long' ? '做多' : '做空'}
+                    {strategyStats.map((s) => (
+                      <tr key={s.strategy_id} className="border-t border-gray-800">
+                        <td className="py-2 font-mono">{s.symbol}</td>
+                        <td className={s.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
+                          {s.direction === 'long' ? '做多' : '做空'}
                         </td>
-                        <td className="font-mono">{p.usdt?.toFixed(2)}</td>
-                        <td className="font-mono">{p.entry_price?.toFixed(6)}</td>
-                        <td className={(p.unrealized_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {p.unrealized_pnl >= 0 ? '+' : ''}
-                          {p.unrealized_pnl?.toFixed(2)}
+                        <td>
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            s.status === 'running' ? 'bg-green-600/20 text-green-400' :
+                            s.status === 'error' ? 'bg-red-600/20 text-red-400' :
+                            'bg-gray-700 text-gray-400'
+                          }`}>
+                            {s.status === 'running' ? '运行' : s.status === 'error' ? '异常' : '停止'}
+                          </span>
                         </td>
-                        <td className={(p.pnl_pct || 0) >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {p.pnl_pct >= 0 ? '+' : ''}
-                          {p.pnl_pct?.toFixed(1)}%
-                        </td>
-                      </tr>
-                    ))}
-                    {positions.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="py-4 text-gray-600 text-center">
-                          暂无持仓
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-              <h3 className="text-sm font-semibold text-gray-300 mb-3">最近交易</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-gray-500 text-left">
-                      <th className="pb-2">时间</th>
-                      <th className="pb-2">交易对</th>
-                      <th className="pb-2">方向</th>
-                      <th className="pb-2">盈亏</th>
-                      <th className="pb-2">原因</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.slice(0, 5).map((t) => (
-                      <tr key={t.id} className="border-t border-gray-800">
-                        <td className="py-2 text-gray-400">{new Date(t.exit_time).toLocaleTimeString()}</td>
-                        <td>{t.symbol}</td>
-                        <td className={t.side === 'long' ? 'text-green-400' : 'text-red-400'}>
-                          {t.side === 'long' ? '做多' : '做空'}
-                        </td>
-                        <td className={t.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {t.realized_pnl.toFixed(4)}
-                        </td>
+                        <td className="font-mono text-green-400">{s.tp_total}</td>
+                        <td className="font-mono text-green-400">{s.tp_today}</td>
                         <td className="text-gray-500 text-xs">
-                          {t.close_reason === 'take_profit'
-                            ? '止盈'
-                            : t.close_reason === 'stop_loss'
-                              ? '止损'
-                              : t.close_reason === 'panic_close'
-                                ? '紧急平仓'
-                                : t.close_reason === 'sync'
-                                  ? '同步平仓'
-                                  : t.close_reason === 'margin_stop'
-                                    ? '保证金止损'
-                                    : t.close_reason === 'manual'
-                                      ? '手动平仓'
-                                      : t.close_reason}
+                          {s.sl_events.length === 0 ? (
+                            <span className="text-gray-600">-</span>
+                          ) : (
+                            s.sl_events.slice(0, 1).map((e, i) => (
+                              <span key={i} className="text-red-400" title={`${e.time} 成交价=${e.exit_price} 数量=${e.quantity}`}>
+                                触发 {s.sl_events.length}次
+                              </span>
+                            ))
+                          )}
                         </td>
                       </tr>
                     ))}
-                    {trades.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="py-4 text-gray-600 text-center">
-                          暂无交易记录
-                        </td>
-                      </tr>
-                    )}
                   </tbody>
                 </table>
               </div>
-            </div>
+            )}
+            {strategyStats.some((s) => s.sl_events.length > 0) && (
+              <details className="mt-3 text-xs text-gray-500">
+                <summary className="cursor-pointer hover:text-gray-300">止损明细</summary>
+                <div className="mt-2 space-y-2">
+                  {strategyStats.filter((s) => s.sl_events.length > 0).map((s) => (
+                    <div key={s.strategy_id} className="pl-2 border-l border-red-500/30">
+                      <span className="font-mono text-gray-300">{s.symbol}</span>
+                      <span className={`ml-2 ${s.direction === 'long' ? 'text-green-400' : 'text-red-400'}`}>
+                        {s.direction === 'long' ? '多' : '空'}
+                      </span>
+                      {s.sl_events.map((e, i) => (
+                        <div key={i} className="ml-3 text-gray-500">
+                          {e.time} 成交价={e.exit_price?.toFixed(6)} 数量={e.quantity?.toFixed(4)}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         </div>
 

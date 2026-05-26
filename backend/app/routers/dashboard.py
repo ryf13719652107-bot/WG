@@ -13,7 +13,7 @@ from ..models.strategy import Strategy
 from ..models.trade import Trade
 from ..models.bot_config import BotConfig
 from ..models.account import Account
-from ..schemas.dashboard import DashboardSnapshot
+from ..schemas.dashboard import DashboardSnapshot, StrategyStatItem, SlEventItem
 from ..services.exchange_factory import get_exchange_service
 from ..services.exchange_base import BaseExchangeService
 
@@ -264,6 +264,54 @@ async def get_dashboard(
     master_config = result.scalar()
     master_switch = master_config.value == "true" if master_config else False
 
+    # Strategy-level TP/SL stats
+    strategy_stats: list[StrategyStatItem] = []
+    today_start = now_beijing().replace(hour=0, minute=0, second=0, microsecond=0)
+    strat_stmt = select(Strategy)
+    if filter_account_id:
+        strat_stmt = strat_stmt.where(Strategy.account_id == filter_account_id)
+    strat_result = await db.execute(strat_stmt)
+    all_strategies = strat_result.scalars().all()
+    for s in all_strategies:
+        tp_total = 0
+        tp_today = 0
+        sl_events: list[SlEventItem] = []
+        if s.started_at:
+            tp_stmt = select(func.count(Trade.id)).where(
+                Trade.strategy_id == s.id,
+                Trade.close_reason == "take_profit",
+                Trade.exit_time >= s.started_at,
+            )
+            tp_total = (await db.execute(tp_stmt)).scalar() or 0
+            tp_stmt_today = select(func.count(Trade.id)).where(
+                Trade.strategy_id == s.id,
+                Trade.close_reason == "take_profit",
+                Trade.exit_time >= s.started_at,
+                Trade.exit_time >= today_start,
+            )
+            tp_today = (await db.execute(tp_stmt_today)).scalar() or 0
+            sl_stmt = select(Trade).where(
+                Trade.strategy_id == s.id,
+                Trade.close_reason == "stop_loss",
+                Trade.exit_time >= s.started_at,
+            ).order_by(Trade.exit_time.desc()).limit(5)
+            sl_rows = (await db.execute(sl_stmt)).scalars().all()
+            for t in sl_rows:
+                sl_events.append(SlEventItem(
+                    time=t.exit_time.strftime("%Y-%m-%d %H:%M:%S") if t.exit_time else "",
+                    exit_price=float(t.exit_price) if t.exit_price else 0,
+                    quantity=float(t.quantity) if t.quantity else 0,
+                ))
+        strategy_stats.append(StrategyStatItem(
+            strategy_id=s.id,
+            symbol=s.symbol,
+            direction=s.direction,
+            status=s.status,
+            tp_total=tp_total,
+            tp_today=tp_today,
+            sl_events=sl_events,
+        ))
+
     return DashboardSnapshot(
         total_balance=round(total_balance, 2),
         available_balance=round(available_balance, 2),
@@ -288,4 +336,5 @@ async def get_dashboard(
         account_name=account_name,
         balance_status=balance_status,
         exchange_positions=exchange_positions,
+        strategy_stats=strategy_stats,
     )

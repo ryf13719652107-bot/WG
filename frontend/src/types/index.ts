@@ -95,4 +95,17 @@ export interface DashboardData {
     unrealized_pnl: number;
     pnl_pct: number;
   }>;
+  strategy_stats: Array<{
+    strategy_id: number;
+    symbol: string;
+    direction: string;
+    status: string;
+    tp_total: number;
+    tp_today: number;
+    sl_events: Array<{
+      time: string;
+      exit_price: number;
+      quantity: number;
+    }>;
+  }>;
 }
