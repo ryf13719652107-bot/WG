@@ -579,14 +579,14 @@ async def get_strategy_stats(strategy_id: int, db: AsyncSession = Depends(get_db
     sl_events: list[SlEvent] = []
 
     if started:
-        tp_stmt = select(func.count(Trade.id)).where(
+        tp_stmt = select(func.count(Trade.exit_time.distinct())).where(
             Trade.strategy_id == strategy_id,
             Trade.close_reason == "take_profit",
             Trade.exit_time >= started,
         )
         tp_total = (await db.execute(tp_stmt)).scalar() or 0
 
-        tp_stmt_today = select(func.count(Trade.id)).where(
+        tp_stmt_today = select(func.count(Trade.exit_time.distinct())).where(
             Trade.strategy_id == strategy_id,
             Trade.close_reason == "take_profit",
             Trade.exit_time >= started,

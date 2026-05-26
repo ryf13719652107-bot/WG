@@ -277,13 +277,13 @@ async def get_dashboard(
         tp_today = 0
         sl_events: list[SlEventItem] = []
         if s.started_at:
-            tp_stmt = select(func.count(Trade.id)).where(
+            tp_stmt = select(func.count(Trade.exit_time.distinct())).where(
                 Trade.strategy_id == s.id,
                 Trade.close_reason == "take_profit",
                 Trade.exit_time >= s.started_at,
             )
             tp_total = (await db.execute(tp_stmt)).scalar() or 0
-            tp_stmt_today = select(func.count(Trade.id)).where(
+            tp_stmt_today = select(func.count(Trade.exit_time.distinct())).where(
                 Trade.strategy_id == s.id,
                 Trade.close_reason == "take_profit",
                 Trade.exit_time >= s.started_at,
