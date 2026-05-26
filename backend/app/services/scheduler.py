@@ -599,8 +599,6 @@ class StrategyScheduler:
             if not strategy or strategy.status != "running":
                 return
 
-            strategy_log_service.info(strategy_id, "执行周期开始")
-
             exchange = await self._get_exchange_for_strategy(strategy_id)
             if not exchange:
                 logger.warning("Strategy %d: exchange not available", strategy_id)
