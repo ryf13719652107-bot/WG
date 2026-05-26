@@ -164,12 +164,19 @@ export default function PositionsPage() {
     return () => clearInterval(timer);
   }, []);
 
-  const rows = useMemo(
-    () => buildRows(dbPositions, exchangePositions),
-    [dbPositions, exchangePositions],
-  );
-
   const [clearBusyId, setClearBusyId] = useState<number | null>(null);
+  const [pnlSort, setPnlSort] = useState<'asc' | 'desc' | null>(null);
+
+  const rows = useMemo(() => {
+    const built = buildRows(dbPositions, exchangePositions);
+    if (pnlSort === 'asc') {
+      return [...built].sort((a, b) => a.unrealized_pnl - b.unrealized_pnl);
+    }
+    if (pnlSort === 'desc') {
+      return [...built].sort((a, b) => b.unrealized_pnl - a.unrealized_pnl);
+    }
+    return built;
+  }, [dbPositions, exchangePositions, pnlSort]);
 
   const clearLocalRow = async (positionId: number) => {
     setClearBusyId(positionId);
@@ -182,6 +189,10 @@ export default function PositionsPage() {
     } finally {
       setClearBusyId(null);
     }
+  };
+
+  const togglePnlSort = () => {
+    setPnlSort((prev) => (prev === null ? 'asc' : prev === 'asc' ? 'desc' : null));
   };
 
   /** 交易所有仓但机器人库无未平仓——与删除策略后的空表区分开，仍提示对账 */
@@ -216,7 +227,16 @@ export default function PositionsPage() {
               <th className="p-3">层数</th>
               <th className="p-3">入场价</th>
               <th className="p-3">限价止盈</th>
-              <th className="p-3">未实现盈亏</th>
+              <th
+                className="p-3 cursor-pointer select-none hover:text-white transition-colors"
+                onClick={togglePnlSort}
+                title="点击排序"
+              >
+                未实现盈亏
+                <span className="ml-1 text-gray-500">
+                  {pnlSort === 'asc' ? '↑' : pnlSort === 'desc' ? '↓' : '↕'}
+                </span>
+              </th>
               <th className="p-3">开仓时间</th>
               <th className="p-3 w-28">操作</th>
             </tr>

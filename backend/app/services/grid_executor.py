@@ -1036,14 +1036,39 @@ class GridExecutor:
         sl_side = "sell" if strategy.direction == "long" else "buy"
 
         if not _sl_price_ok(sl_price):
-            strategy_log_service.warning(
-                strategy.id,
-                f"{log_label}跳过: 止损触发亏损({loss_u:.2f}U)相对当前仓位过大或 ctVal 不准，"
-                f"无法得到有效触发价(sl_price={sl_price:.8f})。"
-                f"请降低「止损触发亏损」或增大首单/加仓仓位；"
-                f"当前约 {qty_basis:.4f} 张 @ {avg_raw:.6f}",
-            )
-            return
+            notional = qty_basis * avg_raw * ct_val
+            capped_loss_u = round(notional * 0.95, 8)
+            if capped_loss_u > 0 and capped_loss_u < loss_u:
+                sl_price_capped = self.engine.stop_loss_price_for_fixed_usdt_loss(
+                    avg_raw, qty_basis, capped_loss_u, strategy.direction, ct_val=ct_val,
+                )
+                if _sl_price_ok(sl_price_capped):
+                    strategy_log_service.warning(
+                        strategy.id,
+                        f"{log_label}止损触发亏损({loss_u:.2f}U)超出仓位总价值({notional:.2f}U)，"
+                        f"自动顶格调整为 {capped_loss_u:.2f}U（95%仓位价值），"
+                        f"止损价={sl_price_capped:.6f}（加仓后自动恢复原始设置）",
+                    )
+                    loss_u = capped_loss_u
+                    sl_price = sl_price_capped
+                else:
+                    strategy_log_service.warning(
+                        strategy.id,
+                        f"{log_label}跳过: 止损触发亏损({loss_u:.2f}U)相对当前仓位过大或 ctVal 不准，"
+                        f"无法得到有效触发价(sl_price={sl_price:.8f}, 顶格后={sl_price_capped:.8f})。"
+                        f"请降低「止损触发亏损」或增大首单/加仓仓位；"
+                        f"当前约 {qty_basis:.4f} 张 @ {avg_raw:.6f}",
+                    )
+                    return
+            else:
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"{log_label}跳过: 止损触发亏损({loss_u:.2f}U)相对当前仓位过大或 ctVal 不准，"
+                    f"无法得到有效触发价(sl_price={sl_price:.8f})。"
+                    f"请降低「止损触发亏损」或增大首单/加仓仓位；"
+                    f"当前约 {qty_basis:.4f} 张 @ {avg_raw:.6f}",
+                )
+                return
 
         if qty_basis <= 0 or qty_sl <= 0 or not self._check_order_qty(qty_sl, symbol):
             strategy_log_service.warning(

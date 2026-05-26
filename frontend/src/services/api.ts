@@ -71,6 +71,11 @@ export const api = {
   }> => request(`/strategies/${id}/panic-close`, { method: 'POST' }),
   getStrategyLogs: (id: number, limit?: number): Promise<{ time: string; level: string; message: string }[]> =>
     request(`/strategies/${id}/logs${limit ? `?limit=${limit}` : ''}`),
+  getStrategyStats: (id: number): Promise<{
+    tp_total: number;
+    tp_today: number;
+    sl_events: Array<{ time: string; exit_price: number; quantity: number }>;
+  }> => request(`/strategies/${id}/stats`),
   getExchangePositions: (id: number): Promise<{
     symbol: string; side: string; usdt: number;
     entry_price: number; mark_price: number; unrealized_pnl: number; pnl_pct: number;

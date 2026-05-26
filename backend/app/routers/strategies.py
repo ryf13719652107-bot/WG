@@ -1,13 +1,16 @@
 import asyncio
 import time
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, delete as sql_delete
+from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from ..database import get_db
 from ..models.strategy import Strategy
 from ..models.position import Position
-from ..schemas.strategy import StrategyCreate, StrategyUpdate, StrategyResponse
+from ..models.trade import Trade
+from ..config import now_beijing
+from ..schemas.strategy import StrategyCreate, StrategyUpdate, StrategyResponse, StrategyStatsResponse, SlEvent
 from ..services.scheduler import strategy_scheduler
 from ..services.exchange_factory import get_exchange_service, clear_all_cache
 from ..services.exchange_base import BaseExchangeService
@@ -55,7 +58,6 @@ async def _flatten_strategy_orders_and_positions(
 
     返回 (平仓是否名义成功, 平仓总数量, 成交均价或0).
     """
-    from ..models.trade import Trade
     from ..config import now_beijing
     from ..services.exchange_factory import get_exchange_service
     from ..services.log_service import strategy_log_service
@@ -560,6 +562,56 @@ async def get_exchange_positions(strategy_id: int, db: AsyncSession = Depends(ge
             "pnl_pct": round(pnl_pct, 2),
         })
     return result
+
+
+@router.get("/{strategy_id}/stats", response_model=StrategyStatsResponse)
+async def get_strategy_stats(strategy_id: int, db: AsyncSession = Depends(get_db)):
+    strategy = await db.get(Strategy, strategy_id)
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    started = strategy.started_at
+    now_bj = now_beijing()
+    today_start = datetime(now_bj.year, now_bj.month, now_bj.day)
+
+    tp_total = 0
+    tp_today = 0
+    sl_events: list[SlEvent] = []
+
+    if started:
+        tp_stmt = select(func.count(Trade.id)).where(
+            Trade.strategy_id == strategy_id,
+            Trade.close_reason == "take_profit",
+            Trade.exit_time >= started,
+        )
+        tp_total = (await db.execute(tp_stmt)).scalar() or 0
+
+        tp_stmt_today = select(func.count(Trade.id)).where(
+            Trade.strategy_id == strategy_id,
+            Trade.close_reason == "take_profit",
+            Trade.exit_time >= started,
+            Trade.exit_time >= today_start,
+        )
+        tp_today = (await db.execute(tp_stmt_today)).scalar() or 0
+
+        sl_stmt = select(Trade).where(
+            Trade.strategy_id == strategy_id,
+            Trade.close_reason == "stop_loss",
+            Trade.exit_time >= started,
+        ).order_by(Trade.exit_time.desc()).limit(20)
+        sl_rows = (await db.execute(sl_stmt)).scalars().all()
+        for t in sl_rows:
+            sl_events.append(SlEvent(
+                time=t.exit_time.strftime("%Y-%m-%d %H:%M:%S") if t.exit_time else "",
+                exit_price=float(t.exit_price) if t.exit_price else 0,
+                quantity=float(t.quantity) if t.quantity else 0,
+            ))
+
+    return StrategyStatsResponse(
+        tp_total=tp_total,
+        tp_today=tp_today,
+        sl_events=sl_events,
+    )
 
 
 @router.get("/{strategy_id}/logs")

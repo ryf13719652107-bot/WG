@@ -3,6 +3,18 @@ from datetime import datetime
 from typing import Optional, Literal
 
 
+class SlEvent(BaseModel):
+    time: str
+    exit_price: float
+    quantity: float
+
+
+class StrategyStatsResponse(BaseModel):
+    tp_total: int = 0
+    tp_today: int = 0
+    sl_events: list[SlEvent] = []
+
+
 class StrategyCreate(BaseModel):
     account_id: int
     direction: Literal["long", "short"]

@@ -2,11 +2,15 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../../services/api';
 import type { Strategy } from '../../types/strategy';
-import type { Trade } from '../../types';
-import { ArrowLeft, Terminal } from 'lucide-react';
-import { formatCloseReason } from '../../utils/tradeUi';
+import { ArrowLeft, Terminal, TrendingUp, AlertTriangle } from 'lucide-react';
 
 interface LogEntry { time: string; level: string; message: string; }
+
+interface StrategyStats {
+  tp_total: number;
+  tp_today: number;
+  sl_events: Array<{ time: string; exit_price: number; quantity: number }>;
+}
 
 function logColor(level: string) {
   switch (level) {
@@ -22,17 +26,11 @@ function fmtTime(s: string | null) {
   return new Date(s).toLocaleString();
 }
 
-function pnlColor(v: number | null) {
-  if (v == null) return 'text-gray-400';
-  return v >= 0 ? 'text-green-400' : 'text-red-400';
-}
-
 export default function StrategyDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [strategy, setStrategy] = useState<Strategy | null>(null);
-  const [positions, setPositions] = useState<any[]>([]);
-  const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [stats, setStats] = useState<StrategyStats>({ tp_total: 0, tp_today: 0, sl_events: [] });
   const [loading, setLoading] = useState(true);
 
   const loadRef = useRef<() => void>(() => {});
@@ -45,19 +43,14 @@ export default function StrategyDetailPage() {
       setLoading(false);
 
       try {
-        const ep = await api.getExchangePositions(Number(id));
-        setPositions(ep);
-      } catch { setPositions([]); }
-
-      try {
-        const tr = await api.listTrades({ strategy_id: Number(id), limit: 50 });
-        setTrades(tr.trades);
-      } catch { setTrades([]); }
-
-      try {
         const l = await api.getStrategyLogs(Number(id), 100);
         setLogs(l);
       } catch { setLogs([]); }
+
+      try {
+        const st = await api.getStrategyStats(Number(id));
+        setStats(st);
+      } catch { setStats({ tp_total: 0, tp_today: 0, sl_events: [] }); }
     } catch {
       setStrategy(null);
       setLoading(false);
@@ -155,45 +148,50 @@ export default function StrategyDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Exchange positions */}
+      {/* TP & SL stats */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-          <h3 className="font-semibold mb-3 text-sm">
-            当前持仓
-            <span className="text-gray-500 ml-2 text-xs">({positions.length} 个)</span>
+          <h3 className="font-semibold mb-3 text-sm flex items-center gap-2">
+            <TrendingUp size={14} className="text-green-400" />
+            止盈统计
           </h3>
-          {positions.length === 0 ? (
-            <div className="text-gray-600 text-sm py-4 text-center">暂无持仓</div>
+          <div className="flex gap-6">
+            <div className="flex flex-col">
+              <span className="text-xs text-gray-500">本次运行</span>
+              <span className="text-2xl font-bold text-green-400">{stats.tp_total}</span>
+              <span className="text-xs text-gray-500">次止盈</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xs text-gray-500">今日</span>
+              <span className="text-2xl font-bold text-green-400">{stats.tp_today}</span>
+              <span className="text-xs text-gray-500">次止盈</span>
+            </div>
+          </div>
+        </div>
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+          <h3 className="font-semibold mb-3 text-sm flex items-center gap-2">
+            <AlertTriangle size={14} className="text-red-400" />
+            止损记录
+            <span className="text-gray-500 ml-2 text-xs">(本次运行)</span>
+          </h3>
+          {stats.sl_events.length === 0 ? (
+            <div className="text-gray-600 text-sm py-2">暂无止损触发</div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="max-h-40 overflow-y-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-gray-500 border-b border-gray-800">
-                    <th className="text-left py-1.5 px-2">币种</th>
-                    <th className="text-left py-1.5 px-2">方向</th>
-                    <th className="text-right py-1.5 px-2">USDT</th>
-                    <th className="text-right py-1.5 px-2">入场价</th>
-                    <th className="text-right py-1.5 px-2">未实现盈亏</th>
-                    <th className="text-right py-1.5 px-2">盈亏%</th>
+                    <th className="text-left py-1 px-2">时间</th>
+                    <th className="text-right py-1 px-2">成交价</th>
+                    <th className="text-right py-1 px-2">数量</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {positions.map((p: any, i: number) => (
-                    <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                      <td className="py-1.5 px-2 text-gray-200 font-mono">{p.symbol}</td>
-                      <td className="py-1.5 px-2">
-                        <span className={`px-1.5 py-0.5 rounded text-xs ${p.side === 'long' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'}`}>
-                          {p.side === 'long' ? '多' : '空'}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2 text-right text-gray-200 font-mono">{p.usdt?.toFixed(2)}</td>
-                      <td className="py-1.5 px-2 text-right text-gray-200 font-mono">{p.entry_price?.toFixed(6)}</td>
-                      <td className={`py-1.5 px-2 text-right font-mono ${pnlColor(p.unrealized_pnl)}`}>
-                        {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl?.toFixed(2)}
-                      </td>
-                      <td className={`py-1.5 px-2 text-right font-mono ${pnlColor(p.pnl_pct)}`}>
-                        {p.pnl_pct >= 0 ? '+' : ''}{p.pnl_pct?.toFixed(2)}%
-                      </td>
+                  {stats.sl_events.map((e, i) => (
+                    <tr key={i} className="border-b border-gray-800/50">
+                      <td className="py-1 px-2 text-gray-300">{e.time}</td>
+                      <td className="py-1 px-2 text-right text-red-400 font-mono">{e.exit_price?.toFixed(6)}</td>
+                      <td className="py-1 px-2 text-right text-gray-300 font-mono">{e.quantity?.toFixed(4)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -201,58 +199,6 @@ export default function StrategyDetailPage() {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Trade history */}
-      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="font-semibold mb-3 text-sm">
-          交易记录
-          <span className="text-gray-500 ml-2 text-xs">({trades.length} 条)</span>
-        </h3>
-        {trades.length === 0 ? (
-          <div className="text-gray-600 text-sm py-4 text-center">暂无交易记录</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-gray-500 border-b border-gray-800">
-                  <th className="text-left py-1.5 px-2">币种</th>
-                  <th className="text-left py-1.5 px-2">方向</th>
-                  <th className="text-right py-1.5 px-2">入场价</th>
-                  <th className="text-right py-1.5 px-2">出场价</th>
-                  <th className="text-right py-1.5 px-2">盈亏</th>
-                  <th className="text-right py-1.5 px-2">盈亏%</th>
-                  <th className="text-right py-1.5 px-2">层/网格</th>
-                  <th className="text-right py-1.5 px-2">原因</th>
-                  <th className="text-right py-1.5 px-2">时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                    <td className="py-1.5 px-2 text-gray-200 font-mono">{t.symbol}</td>
-                    <td className="py-1.5 px-2">
-                      <span className={`px-1.5 py-0.5 rounded text-xs ${t.side === 'long' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'}`}>
-                        {t.side === 'long' ? '多' : '空'}
-                      </span>
-                    </td>
-                    <td className="py-1.5 px-2 text-right text-gray-200 font-mono">{t.entry_price?.toFixed(8)}</td>
-                    <td className="py-1.5 px-2 text-right text-gray-200 font-mono">{t.exit_price?.toFixed(8)}</td>
-                    <td className={`py-1.5 px-2 text-right font-mono ${pnlColor(t.realized_pnl)}`}>
-                      {t.realized_pnl >= 0 ? '+' : ''}{t.realized_pnl?.toFixed(2)}
-                    </td>
-                    <td className={`py-1.5 px-2 text-right font-mono ${pnlColor(t.pnl_pct)}`}>
-                      {t.pnl_pct >= 0 ? '+' : ''}{t.pnl_pct?.toFixed(2)}%
-                    </td>
-                    <td className="py-1.5 px-2 text-right text-gray-400">L{t.layer}/G{t.grid_level ?? 0}</td>
-                    <td className="py-1.5 px-2 text-right text-gray-400">{formatCloseReason(t.close_reason)}</td>
-                    <td className="py-1.5 px-2 text-right text-gray-500">{fmtTime(t.exit_time)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {/* Logs */}
