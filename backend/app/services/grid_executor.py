@@ -448,6 +448,7 @@ class GridExecutor:
         tp_price = self.engine.calculate_tp_price(avg_entry, side)
         tp_side = "sell" if side == "long" else "buy"
         total_qty = sum(float(p.quantity) for p in positions)
+        total_qty = await exchange.normalize_order_amount(symbol, total_qty)
         if self._check_order_qty(total_qty, symbol):
             try:
                 tp_order = await exchange.create_limit_order(
@@ -1294,6 +1295,8 @@ class GridExecutor:
         tp_price = self.engine.calculate_tp_price(avg_entry, side)
         tp_side = "sell" if side == "long" else "buy"
 
+        total_qty = await exchange.normalize_order_amount(symbol, total_qty)
+
         if not self._check_order_qty(total_qty, symbol):
             strategy_log_service.warning(strategy.id, f"补挂止盈跳过: 数量超限({total_qty:.2f})")
             return
@@ -1497,10 +1500,11 @@ class GridExecutor:
 
         tp_price = self.engine.calculate_tp_price(entry_price, strategy.direction)
         tp_side = "sell" if strategy.direction == "long" else "buy"
-        if self._check_order_qty(filled_qty, symbol):
+        tp_qty = await exchange.normalize_order_amount(symbol, filled_qty)
+        if self._check_order_qty(tp_qty, symbol):
             try:
                 tp_order = await exchange.create_limit_order(
-                    symbol, tp_side, filled_qty, tp_price,
+                    symbol, tp_side, tp_qty, tp_price,
                     reduce_only=True, position_side=position_side,
                 )
                 oid_tp = GridExecutor._order_id_from_create_response(tp_order)
@@ -1509,7 +1513,7 @@ class GridExecutor:
                 pos.take_profit_price = tp_price
                 order_tracker.add(
                     oid_tp, symbol, tp_side, "limit",
-                    filled_qty, tp_price, strategy.id, "tp",
+                    tp_qty, tp_price, strategy.id, "tp",
                 )
                 if not ok_tp:
                     strategy_log_service.error(
@@ -1520,14 +1524,14 @@ class GridExecutor:
                 else:
                     strategy_log_service.success(
                         strategy.id,
-                        f"挂单止盈操作成功（首仓）: {symbol} 数量={filled_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%) "
+                        f"挂单止盈操作成功（首仓）: {symbol} 数量={tp_qty:.4f} 止盈价={tp_price:.4f} ({strategy.tp_pct}%) "
                         f"订单ID={oid_tp} （所核验={tp_hint}）",
                     )
                     self._schedule_feishu(
                         strategy,
                         title="挂单止盈（限价 reduce-only）",
                         body_lines=[
-                            f"数量≈{filled_qty:.8f}",
+                            f"数量≈{tp_qty:.8f}",
                             f"止盈价={tp_price:.8f}（{strategy.tp_pct}%）",
                             f"订单ID: {oid_tp}",
                             f"核验状态≈{tp_hint}",
