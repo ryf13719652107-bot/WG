@@ -1255,6 +1255,7 @@ class GridExecutor:
                 break
 
         total_qty = sum(float(p.quantity) for p in positions)
+        total_qty = await exchange.normalize_order_amount(symbol, total_qty)
 
         if has_tp_oid and order_tracker.has_active_tp_for_symbol(strategy.id, symbol):
             tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
@@ -1282,7 +1283,7 @@ class GridExecutor:
                             tp_side_hint = "sell" if strategy.direction == "long" else "buy"
                             order_tracker.add(
                                 oid, symbol, tp_side_hint, "limit",
-                                sum(float(pp.quantity) for pp in positions),
+                                total_qty,
                                 float(p.take_profit_price or 0) or 0.0,
                                 strategy.id, "tp",
                             )
@@ -1294,8 +1295,6 @@ class GridExecutor:
         avg_entry = self.engine.calculate_avg_entry(positions)
         tp_price = self.engine.calculate_tp_price(avg_entry, side)
         tp_side = "sell" if side == "long" else "buy"
-
-        total_qty = await exchange.normalize_order_amount(symbol, total_qty)
 
         if not self._check_order_qty(total_qty, symbol):
             strategy_log_service.warning(strategy.id, f"补挂止盈跳过: 数量超限({total_qty:.2f})")
@@ -1541,7 +1540,7 @@ class GridExecutor:
                 logger.error("Failed to place TP order for %s %s: %s", strategy.id, symbol, e)
                 strategy_log_service.error(strategy.id, f"挂单止盈失败: {e}（下周期将通过补挂机制重试）")
         else:
-            strategy_log_service.warning(strategy.id, f"止盈数量超限({filled_qty:.2f}),跳过挂单,请手动止盈")
+            strategy_log_service.warning(strategy.id, f"止盈数量超限({tp_qty:.2f}),跳过挂单,请手动止盈")
 
         await session.commit()
 
