@@ -414,10 +414,15 @@ class BinanceService(BaseExchangeService):
         total_contracts = 0.0
         for pos in positions:
             if BaseExchangeService.position_row_matches_leg(pos, symbol, side.lower(), formatted):
-                total_contracts += float(pos.get("contracts", 0) or 0)
+                total_contracts += BaseExchangeService.position_row_contracts_abs(pos)
 
         if total_contracts <= 0:
             logger.warning("close_position: no contracts for %s %s", symbol, side)
+            return {}
+
+        total_contracts = await self.normalize_order_amount(symbol, total_contracts)
+        if total_contracts <= 0:
+            logger.warning("close_position: normalized qty is 0 for %s %s", symbol, side)
             return {}
 
         close_side = "sell" if side == "long" else "buy"
