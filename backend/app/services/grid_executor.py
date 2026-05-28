@@ -447,8 +447,8 @@ class GridExecutor:
         avg_entry = self.engine.calculate_avg_entry(positions)
         tp_price = self.engine.calculate_tp_price(avg_entry, side)
         tp_side = "sell" if side == "long" else "buy"
-        # 止盈数量 = 各仓位求和（每层下单时已量化），不再二次 normalize 避免截断
-        total_qty = sum(float(p.quantity) for p in positions)
+        # 止盈数量 → 取交易所实际持仓（ex_qty 已在上面获取），避免 DB 求和+ccxt内部 normalize 截断
+        total_qty = ex_qty
         if self._check_order_qty(total_qty, symbol):
             try:
                 tp_order = await exchange.create_limit_order(
@@ -1254,8 +1254,9 @@ class GridExecutor:
                 has_tp_oid = True
                 break
 
-        # 止盈数量 = 各仓位求和（每层下单时已量化），不再二次 normalize 避免截断
-        total_qty = sum(float(p.quantity) for p in positions)
+        # 止盈数量 → 取交易所实际持仓，避免 DB 求和+ccxt内部 normalize 截断
+        ex_qty = await self._exchange_leg_contracts(exchange, symbol, strategy.direction)
+        total_qty = ex_qty if ex_qty > 0 else sum(float(p.quantity) for p in positions)
 
         if has_tp_oid and order_tracker.has_active_tp_for_symbol(strategy.id, symbol):
             tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
