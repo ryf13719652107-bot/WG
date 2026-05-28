@@ -13,7 +13,17 @@ db_dir = os.path.dirname(db_path)
 if db_dir and not os.path.exists(db_dir):
     os.makedirs(db_dir, exist_ok=True)
 
-engine = create_async_engine(settings.database_url, echo=False)
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    connect_args={
+        "timeout": 30,          # SQLite busy timeout — wait up to 30s before giving up
+        "check_same_thread": False,
+    },
+    pool_size=5,              # Limit concurrent connections; SQLite serializes writes anyway
+    max_overflow=5,           # Allow extra connections under spike load
+    pool_pre_ping=True,       # Reconnect on stale connections
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
