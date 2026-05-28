@@ -296,6 +296,7 @@ class GridExecutor:
             try:
                 await exchange.cancel_order(oid, sym)
                 canceled.append(oid)
+                order_tracker.discard_order(oid)
             except Exception as e:
                 failed_detail.append(f"{GridExecutor._short_order_id(oid)}:{e}")
                 logger.debug("Cancel TP id %s: %s", oid, e)
@@ -303,8 +304,6 @@ class GridExecutor:
                     strategy.id,
                     f"{symbol} {prefix}撤限价止盈失败 Id={GridExecutor._short_order_id(oid)}: {e}",
                 )
-            finally:
-                order_tracker.discard_order(oid)
 
         for p in positions or []:
             p.tp_limit_order_id = None
@@ -427,6 +426,13 @@ class GridExecutor:
             f"{symbol}: {context}，撤销旧止盈/止损后以合并仓位重挂",
         )
 
+        # 保存旧止盈ID，防止 _cancel_tp_orders_with_verify 清空后无法推断止盈成交
+        old_tp_oids_before_cancel: list[str] = []
+        for p in positions:
+            oid = (getattr(p, "tp_limit_order_id", None) or "").strip()
+            if oid and oid not in old_tp_oids_before_cancel:
+                old_tp_oids_before_cancel.append(oid)
+
         cancel_ok = await self._cancel_tp_orders_with_verify(
             session, strategy, symbol, exchange, positions, context=context,
         )
@@ -437,11 +443,40 @@ class GridExecutor:
             )
 
         ex_qty = await self._exchange_leg_contracts(exchange, symbol, strategy.direction)
-        if ex_qty >= 0 and ex_qty <= 1e-12:
-            strategy_log_service.warning(
-                strategy.id,
-                f"{symbol}: {context}撤销旧止盈后发现交易所持仓已平，跳过挂新止盈（可能止盈已成交）",
-            )
+        if ex_qty < 0:
+            # API 获取持仓失败，无法确定当前仓位，恢复旧止盈ID后跳过（下周期重试）
+            if old_tp_oids_before_cancel:
+                first_oid = old_tp_oids_before_cancel[0]
+                for p in positions:
+                    p.tp_limit_order_id = first_oid
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"{symbol}: {context}获取交易所持仓失败，"
+                    f"已恢复旧止盈ID({GridExecutor._short_order_id(first_oid)})，下周期重试",
+                )
+            return
+        if ex_qty <= 1e-12:
+            if old_tp_oids_before_cancel:
+                # 恢复旧止盈订单ID，让 _check_tp_fills 流程能正确检测到止盈成交
+                first_oid = old_tp_oids_before_cancel[0]
+                tp_price_hint = 0.0
+                for p in positions:
+                    tp_price_hint = float(p.take_profit_price or 0) or 0.0
+                    if tp_price_hint > 0:
+                        break
+                for p in positions:
+                    p.tp_limit_order_id = first_oid
+                    p.take_profit_price = tp_price_hint
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"{symbol}: {context}撤销旧止盈后发现交易所持仓已平，"
+                    f"已恢复旧止盈ID({GridExecutor._short_order_id(first_oid)})供止盈检测流程处理",
+                )
+            else:
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"{symbol}: {context}撤销旧止盈后发现交易所持仓已平，跳过挂新止盈（可能止盈已成交）",
+                )
             return
 
         avg_entry = self.engine.calculate_avg_entry(positions)
@@ -858,7 +893,7 @@ class GridExecutor:
                 e,
             )
 
-        if still_open is not True:
+        if still_open is False:
             co.status = OrderState.FILLED
             if co.price <= 0 and tp_price_hint > 0:
                 co.price = tp_price_hint
@@ -1256,8 +1291,12 @@ class GridExecutor:
 
         # 止盈数量 → 取交易所实际持仓，避免 DB 求和+ccxt内部 normalize 截断
         ex_qty = await self._exchange_leg_contracts(exchange, symbol, strategy.direction)
-        total_qty = ex_qty if ex_qty > 0 else sum(float(p.quantity) for p in positions)
+        if ex_qty <= 1e-12:
+            # 交易所无持仓，可能已被止盈/止损平仓，跳过补挂
+            return
+        total_qty = ex_qty
 
+        qty_mismatch = False
         if has_tp_oid and order_tracker.has_active_tp_for_symbol(strategy.id, symbol):
             tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
             qty_mismatch = False
@@ -1306,12 +1345,25 @@ class GridExecutor:
             o = (getattr(p, "tp_limit_order_id", None) or "").strip()
             if o and o not in old_tp_oids:
                 old_tp_oids.append(o)
+        cancel_failed = False
         for old_oid in old_tp_oids:
             try:
                 await exchange.cancel_order(old_oid, symbol)
             except Exception:
                 pass
-            order_tracker.discard_order(old_oid)
+            # 核验撤销是否实际生效，避免静默取消失败导致双止盈单
+            still_open = await self._tp_order_still_open_on_exchange(exchange, symbol, old_oid)
+            if still_open:
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"补挂止盈: 撤销旧止盈单 {GridExecutor._short_order_id(old_oid)} 失败，"
+                    f"订单仍在交易所挂单中，跳过本次补挂",
+                )
+                cancel_failed = True
+            else:
+                order_tracker.discard_order(old_oid)
+        if cancel_failed:
+            return
         for p in positions:
             p.tp_limit_order_id = None
 
@@ -1341,17 +1393,16 @@ class GridExecutor:
                     f"订单ID={tp_order_id} （所核验={tp_hint}）",
                 )
             else:
-                for p in positions:
-                    p.tp_limit_order_id = tp_order_id
-                    p.take_profit_price = tp_price
-                order_tracker.add(
-                    tp_order_id, symbol, tp_side, "limit",
-                    total_qty, tp_price, strategy.id, "tp",
-                )
+                # 核验失败：撤销刚创建的订单，避免残留
+                try:
+                    await exchange.cancel_order(tp_order_id, symbol)
+                except Exception:
+                    pass
+                order_tracker.discard_order(tp_order_id)
                 strategy_log_service.error(
                     strategy.id,
                     f"补挂止盈: 核验失败 {symbol} ordId≈{GridExecutor._short_order_id(tp_order_id)} [{tp_hint}]；"
-                    f"已记录订单ID，下周期将再次核验或补挂",
+                    f"已撤销该订单，下周期将通过补挂机制重试",
                 )
         except Exception as e:
             logger.error("Retry TP failed strategy=%d: %s", strategy.id, e)
@@ -1905,7 +1956,7 @@ class GridExecutor:
             )
             if filled_qty <= 0 or fill_price <= 0:
                 still_open = await self._grid_add_order_still_open(exchange, symbol, o.order_id)
-                if still_open is not True:
+                if still_open is False:
                     if filled_qty <= 0:
                         filled_qty = float(o.amount or 0)
                     if fill_price <= 0:
@@ -1959,6 +2010,7 @@ class GridExecutor:
             try:
                 await exchange.cancel_order(oid, sym)
                 canceled.append(oid)
+                order_tracker.discard_order(oid)
             except Exception as e:
                 failed_detail.append(f"{GridExecutor._short_order_id(oid)}:{e}")
                 logger.debug("Cancel TP from DB id %s: %s", oid, e)
@@ -1966,8 +2018,6 @@ class GridExecutor:
                     strategy.id,
                     f"{symbol} {prefix}撤限价止盈失败 Id={GridExecutor._short_order_id(oid)}: {e}",
                 )
-            finally:
-                order_tracker.discard_order(oid)
 
         tp_orders = order_tracker.get_pending_by_purpose(strategy.id, "tp")
         for o in tp_orders:
@@ -1981,6 +2031,7 @@ class GridExecutor:
             try:
                 await exchange.cancel_order(oid, sym_o)
                 canceled.append(oid)
+                order_tracker.discard_order(oid)
             except Exception as e:
                 failed_detail.append(f"{GridExecutor._short_order_id(oid)}:{e}")
                 logger.debug("Cancel TP order %s: %s", oid, e)
@@ -1988,8 +2039,6 @@ class GridExecutor:
                     strategy.id,
                     f"{symbol} {prefix}撤限价止盈(track)失败 Id={GridExecutor._short_order_id(oid)}: {e}",
                 )
-            finally:
-                order_tracker.discard_order(oid)
 
         for p in positions or []:
             p.tp_limit_order_id = None
