@@ -180,11 +180,13 @@ async def _flatten_strategy_orders_and_positions(
     def _log_close_success(msg: str) -> None:
         if close_reason == "panic_close":
             strategy_log_service.success(strategy_id, msg)
+        elif close_reason == "equity_stop":
+            strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.success(strategy_id, msg)
 
     def _log_close_error(msg: str) -> None:
-        if close_reason == "panic_close":
+        if close_reason in ("panic_close", "equity_stop"):
             strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.error(strategy_id, msg)
@@ -247,6 +249,8 @@ async def _flatten_strategy_orders_and_positions(
         close_success = True
         if close_reason == "panic_close":
             strategy_log_service.info(strategy_id, "紧急平仓: 无持仓需要平仓")
+        elif close_reason == "equity_stop":
+            strategy_log_service.info(strategy_id, "总资产止损: 无持仓需要平仓")
         else:
             strategy_log_service.info(strategy_id, "删除策略: 无持仓需要平仓")
 

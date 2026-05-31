@@ -429,7 +429,7 @@ export default function SettingsPage() {
               </div>
               <p className="text-xs text-gray-500 leading-relaxed">
                 填 <strong className="text-gray-400">0</strong> 表示关闭。非 0 时：本账户<strong className="text-gray-400">第一个</strong>策略启动会记入当时总权益；
-                之后每分钟检查，若合约账户总权益（USDT）&lt; 下限，则<strong className="text-gray-400">停止本账户全部运行中策略</strong>并禁止再启动，直至重置。
+                之后每分钟检查，若合约账户总权益（USDT）&lt; 下限，则<strong className="text-gray-400">立即市价平仓各策略持仓、停止本账户全部运行中策略</strong>并禁止再启动，直至重置。
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-xs text-gray-500">止损下限 (USDT)</label>

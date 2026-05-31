@@ -99,7 +99,7 @@ async def halt_account_trading(
     floor_u: float,
     baseline_u: float | None = None,
 ) -> int:
-    """停止该账户全部 running 策略并标记已触发。返回停止的策略数。"""
+    """总资产止损触发：市价平掉各策略持仓、撤单并停止本账户全部 running 策略。"""
     async with _halt_lock(account_id):
         async with async_session() as session:
             account = await session.get(Account, account_id)
@@ -109,33 +109,68 @@ async def halt_account_trading(
                 return 0
             account.equity_stop_triggered = True
             r = await session.execute(
-                select(Strategy.id).where(
+                select(Strategy).where(
                     Strategy.account_id == account_id,
                     Strategy.status == "running",
                 )
             )
-            strategy_ids = [int(row[0]) for row in r.all()]
+            strategies = list(r.scalars().all())
             await session.commit()
 
-        if not strategy_ids:
+        if not strategies:
             return 0
 
         from .scheduler import strategy_scheduler
         from .log_service import strategy_log_service
+        from ..routers.strategies import _flatten_strategy_orders_and_positions
 
-        for sid in strategy_ids:
+        close_ok_n = 0
+        for strategy in strategies:
+            sid = strategy.id
             try:
                 await strategy_scheduler.remove_strategy(sid)
+            except Exception as e:
+                logger.error("halt account %d: remove_strategy %d failed: %s", account_id, sid, e)
+
+            try:
+                async with async_session() as session:
+                    s = await session.get(Strategy, sid)
+                    if not s:
+                        continue
+                    close_ok, qty, exit_px = await _flatten_strategy_orders_and_positions(
+                        s,
+                        session,
+                        close_reason="equity_stop",
+                        use_order_tracker=True,
+                    )
+                    s.status = "stopped"
+                    await session.commit()
+                    if close_ok:
+                        close_ok_n += 1
+                    detail = (
+                        f"账户总资产止损：当前权益≈{current_equity:.4f}U < 下限{floor_u:.4f}U；"
+                        f"已撤单并{'市价平仓成功' if close_ok else '尝试市价平仓未完全确认'} "
+                        f"({s.symbol} {s.direction}"
+                        + (f" 数量≈{qty:.4f} 价≈{exit_px:.4f}" if qty > 0 else "")
+                        + ")，策略已停止"
+                    )
+                    if close_ok:
+                        strategy_log_service.error(sid, detail)
+                    else:
+                        strategy_log_service.warning(sid, detail)
+            except Exception as e:
+                logger.error(
+                    "halt account %d: flatten strategy %d failed: %s", account_id, sid, e,
+                )
                 strategy_log_service.error(
                     sid,
-                    f"账户总资产止损触发：当前权益≈{current_equity:.4f}U < 下限{floor_u:.4f}U，策略已停止",
+                    f"账户总资产止损：市价平仓异常 {e}，策略已停止，请到交易所核对持仓",
                 )
-            except Exception as e:
-                logger.error("halt account %d: stop strategy %d failed: %s", account_id, sid, e)
 
         msg = (
             f"当前总权益≈{current_equity:.4f} USDT，已低于止损下限 {floor_u:.4f} USDT；"
-            f"已停止本账户全部 {len(strategy_ids)} 个运行中策略。"
+            f"已停止本账户全部 {len(strategies)} 个运行中策略，"
+            f"其中 {close_ok_n} 个策略交易所确认市价平仓成功。"
         )
         if baseline_u and baseline_u > 0:
             msg += f" 启动时基准权益≈{baseline_u:.4f} USDT。"
@@ -148,12 +183,15 @@ async def halt_account_trading(
                 symbol="—",
                 direction="—",
                 title="账户总资产止损触发",
-                body_lines=[msg, "请在系统设置中调整下限或重置后，再手动启动策略。"],
+                body_lines=[
+                    msg,
+                    "已对本账户各策略撤单并尝试市价全平；请在系统设置中调整下限或重置后，再手动启动策略。",
+                ],
             )
         except Exception as e:
             logger.debug("Feishu equity stop notify: %s", e)
 
-        return len(strategy_ids)
+        return len(strategies)
 
 
 async def should_run_equity_check_on_tick(account_id: int) -> bool:

@@ -57,7 +57,7 @@ bash deploy.sh
 - **止损触发亏损** `cumulative_loss_threshold_u`：按「当前整仓」推算交易所止损触发价（名义亏损达到约 U）；**0=不挂止损**
 - **止损平仓比例** `stop_loss_close_pct`：触发后在持仓数量维度平仓的比例 **0–100%**；**0=不挂止损**；**100** 等价于单次触发减满仓（旧行为）；减仓后若有剩余会自动重挂止盈与下一笔加仓链
 - **止盈全平后重开** `reopen_after_close`：仅当 **止盈限价全部平仓** 后是否自动市价重开首单；**止损路径永不自动重开**
-- **账户总资产止损**（`Account.equity_stop_floor_u`）：0=关闭；非 0 时首个策略启动记入 `equity_baseline_u`，每分钟 `account_equity_guard` 检查合约总权益(USDT)，低于下限则停止该账户全部策略
+- **账户总资产止损**（`Account.equity_stop_floor_u`）：0=关闭；非 0 时首个策略启动记入 `equity_baseline_u`，每分钟 `account_equity_guard` 检查合约总权益(USDT)，低于下限则对本账户各策略撤单+市价全平（`close_reason=equity_stop`）并停止全部策略
 
 ### 多级止损机制
 - **SOFT（80%阈值）**：仅预警，继续交易，记录策略日志
