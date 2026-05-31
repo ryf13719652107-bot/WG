@@ -5,12 +5,18 @@ from app.services.trading_schedule import (
     TradingWindowConfig,
     is_within_trading_window,
     _parse_hm,
+    normalize_hm_str,
 )
 
 
 def test_parse_hm():
     assert _parse_hm("06:00") is not None
     assert _parse_hm("bad") is None
+
+
+def test_normalize_hm_with_seconds():
+    assert normalize_hm_str("06:00:00") == "06:00"
+    assert normalize_hm_str("21:00") == "21:00"
 
 
 def test_same_day_window():

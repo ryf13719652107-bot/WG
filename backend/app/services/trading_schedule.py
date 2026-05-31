@@ -31,9 +31,28 @@ class TradingWindowConfig:
     end_hm: str
 
 
-def _parse_hm(s: str) -> dt_time | None:
+def normalize_hm_str(s: str) -> str:
+    """浏览器 time 输入可能是 HH:MM 或 HH:MM:SS，统一为 HH:MM。"""
     raw = (s or "").strip()
+    if not raw:
+        return ""
     parts = raw.split(":")
+    if len(parts) < 2:
+        return raw
+    try:
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return f"{h:02d}:{m:02d}"
+    except (TypeError, ValueError):
+        pass
+    return raw
+
+
+def _parse_hm(s: str) -> dt_time | None:
+    norm = normalize_hm_str(s)
+    if not norm:
+        return None
+    parts = norm.split(":")
     if len(parts) != 2:
         return None
     try:
@@ -103,18 +122,20 @@ async def save_trading_window_config(
             else:
                 session.add(BotConfig(key=CFG_ENABLED, value=val))
         if start_hm is not None:
-            s = start_hm.strip() or _DEFAULT_START
+            s = normalize_hm_str(start_hm) or _DEFAULT_START
             if keys[CFG_START]:
                 keys[CFG_START].value = s
             else:
                 session.add(BotConfig(key=CFG_START, value=s))
         if end_hm is not None:
-            e = end_hm.strip() or _DEFAULT_END
+            e = normalize_hm_str(end_hm) or _DEFAULT_END
             if keys[CFG_END]:
                 keys[CFG_END].value = e
             else:
                 session.add(BotConfig(key=CFG_END, value=e))
         await session.commit()
+    global _window_was_open
+    _window_was_open = None
     return await get_trading_window_config()
 
 

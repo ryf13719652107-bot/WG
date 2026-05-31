@@ -95,14 +95,16 @@ export default function SettingsPage() {
     }
   };
 
+  const normalizeTime = (v: string) => (v.length >= 5 ? v.slice(0, 5) : v);
+
   const handleSaveSchedule = async () => {
     setScheduleSaving(true);
     setScheduleErr('');
     try {
       const s = await api.updateTradingSchedule({
         enabled: scheduleEnabled,
-        start_hm: scheduleStart,
-        end_hm: scheduleEnd,
+        start_hm: normalizeTime(scheduleStart),
+        end_hm: normalizeTime(scheduleEnd),
       });
       setSchedule(s);
       setScheduleEnabled(s.enabled);

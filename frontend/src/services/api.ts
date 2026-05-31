@@ -29,7 +29,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || 'Request failed');
+    const detail = err.detail || res.statusText || 'Request failed';
+    throw new Error(
+      typeof detail === 'string'
+        ? (res.status >= 500 ? `${detail}（HTTP ${res.status}，请确认后端已重启且为最新代码）` : detail)
+        : 'Request failed',
+    );
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
@@ -163,7 +168,7 @@ export const api = {
     start_hm?: string;
     end_hm?: string;
   }): Promise<TradingScheduleConfig> =>
-    request('/bot/trading-schedule', { method: 'PUT', body: JSON.stringify(data) }),
+    request('/bot/trading-schedule', { method: 'POST', body: JSON.stringify(data) }),
 
   getFeishuNotify: (): Promise<FeishuNotifySettings> => request('/bot/feishu-notify'),
 

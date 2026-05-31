@@ -284,8 +284,50 @@ class TradingSchedulePublic(BaseModel):
 
 class TradingScheduleUpdate(BaseModel):
     enabled: bool | None = None
-    start_hm: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
-    end_hm: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    start_hm: str | None = None
+    end_hm: str | None = None
+
+
+async def _apply_trading_schedule_update(body: TradingScheduleUpdate) -> TradingSchedulePublic:
+    from .services.trading_schedule import (
+        get_trading_window_config,
+        is_within_trading_window,
+        save_trading_window_config,
+        _parse_hm,
+        normalize_hm_str,
+    )
+    start_in = normalize_hm_str(body.start_hm) if body.start_hm is not None else None
+    end_in = normalize_hm_str(body.end_hm) if body.end_hm is not None else None
+    if start_in is not None and not start_in:
+        return JSONResponse(status_code=400, content={"detail": "开盘时间不能为空"})
+    if end_in is not None and not end_in:
+        return JSONResponse(status_code=400, content={"detail": "收市时间不能为空"})
+    if start_in is not None and _parse_hm(start_in) is None:
+        return JSONResponse(status_code=400, content={"detail": "开盘时间格式无效，请使用 HH:MM"})
+    if end_in is not None and _parse_hm(end_in) is None:
+        return JSONResponse(status_code=400, content={"detail": "收市时间格式无效，请使用 HH:MM"})
+    cfg_cur = await get_trading_window_config()
+    start_v = start_in if start_in is not None else cfg_cur.start_hm
+    end_v = end_in if end_in is not None else cfg_cur.end_hm
+    ts, te = _parse_hm(start_v), _parse_hm(end_v)
+    if ts and te and ts == te:
+        return JSONResponse(status_code=400, content={"detail": "开盘与收市时间不能相同"})
+    try:
+        await save_trading_window_config(
+            enabled=body.enabled,
+            start_hm=start_in,
+            end_hm=end_in,
+        )
+    except Exception as e:
+        logging.exception("save_trading_window_config failed")
+        return JSONResponse(status_code=500, content={"detail": f"保存失败: {e}"})
+    cfg = await get_trading_window_config()
+    return TradingSchedulePublic(
+        enabled=cfg.enabled,
+        start_hm=cfg.start_hm,
+        end_hm=cfg.end_hm,
+        within_window=is_within_trading_window(cfg=cfg),
+    )
 
 
 @app.get("/api/bot/trading-schedule", response_model=TradingSchedulePublic)
@@ -301,35 +343,14 @@ async def get_trading_schedule():
 
 
 @app.put("/api/bot/trading-schedule", response_model=TradingSchedulePublic)
-async def update_trading_schedule(body: TradingScheduleUpdate):
-    from .services.trading_schedule import (
-        get_trading_window_config,
-        is_within_trading_window,
-        save_trading_window_config,
-        _parse_hm,
-    )
-    if body.start_hm is not None and _parse_hm(body.start_hm) is None:
-        return JSONResponse(status_code=400, content={"detail": "开盘时间格式无效，请使用 HH:MM"})
-    if body.end_hm is not None and _parse_hm(body.end_hm) is None:
-        return JSONResponse(status_code=400, content={"detail": "收市时间格式无效，请使用 HH:MM"})
-    cfg_cur = await get_trading_window_config()
-    start_v = body.start_hm if body.start_hm is not None else cfg_cur.start_hm
-    end_v = body.end_hm if body.end_hm is not None else cfg_cur.end_hm
-    ts, te = _parse_hm(start_v), _parse_hm(end_v)
-    if ts and te and ts == te:
-        return JSONResponse(status_code=400, content={"detail": "开盘与收市时间不能相同"})
-    await save_trading_window_config(
-        enabled=body.enabled,
-        start_hm=body.start_hm,
-        end_hm=body.end_hm,
-    )
-    cfg = await get_trading_window_config()
-    return TradingSchedulePublic(
-        enabled=cfg.enabled,
-        start_hm=cfg.start_hm,
-        end_hm=cfg.end_hm,
-        within_window=is_within_trading_window(cfg=cfg),
-    )
+async def update_trading_schedule_put(body: TradingScheduleUpdate):
+    return await _apply_trading_schedule_update(body)
+
+
+@app.post("/api/bot/trading-schedule", response_model=TradingSchedulePublic)
+async def update_trading_schedule_post(body: TradingScheduleUpdate):
+    """与 PUT 相同；部分反代对 POST 更友好。"""
+    return await _apply_trading_schedule_update(body)
 
 
 class FeishuNotifyPublic(BaseModel):
