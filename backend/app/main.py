@@ -275,6 +275,63 @@ async def toggle_bot(body: ToggleRequest, db: AsyncSession = Depends(get_db)):
     return {"master_switch": enabled}
 
 
+class TradingSchedulePublic(BaseModel):
+    enabled: bool
+    start_hm: str
+    end_hm: str
+    within_window: bool
+
+
+class TradingScheduleUpdate(BaseModel):
+    enabled: bool | None = None
+    start_hm: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    end_hm: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+
+
+@app.get("/api/bot/trading-schedule", response_model=TradingSchedulePublic)
+async def get_trading_schedule():
+    from .services.trading_schedule import get_trading_window_config, is_within_trading_window
+    cfg = await get_trading_window_config()
+    return TradingSchedulePublic(
+        enabled=cfg.enabled,
+        start_hm=cfg.start_hm,
+        end_hm=cfg.end_hm,
+        within_window=is_within_trading_window(cfg=cfg),
+    )
+
+
+@app.put("/api/bot/trading-schedule", response_model=TradingSchedulePublic)
+async def update_trading_schedule(body: TradingScheduleUpdate):
+    from .services.trading_schedule import (
+        get_trading_window_config,
+        is_within_trading_window,
+        save_trading_window_config,
+        _parse_hm,
+    )
+    if body.start_hm is not None and _parse_hm(body.start_hm) is None:
+        return JSONResponse(status_code=400, content={"detail": "开盘时间格式无效，请使用 HH:MM"})
+    if body.end_hm is not None and _parse_hm(body.end_hm) is None:
+        return JSONResponse(status_code=400, content={"detail": "收市时间格式无效，请使用 HH:MM"})
+    cfg_cur = await get_trading_window_config()
+    start_v = body.start_hm if body.start_hm is not None else cfg_cur.start_hm
+    end_v = body.end_hm if body.end_hm is not None else cfg_cur.end_hm
+    ts, te = _parse_hm(start_v), _parse_hm(end_v)
+    if ts and te and ts == te:
+        return JSONResponse(status_code=400, content={"detail": "开盘与收市时间不能相同"})
+    await save_trading_window_config(
+        enabled=body.enabled,
+        start_hm=body.start_hm,
+        end_hm=body.end_hm,
+    )
+    cfg = await get_trading_window_config()
+    return TradingSchedulePublic(
+        enabled=cfg.enabled,
+        start_hm=cfg.start_hm,
+        end_hm=cfg.end_hm,
+        within_window=is_within_trading_window(cfg=cfg),
+    )
+
+
 class FeishuNotifyPublic(BaseModel):
     webhook_masked: str
     webhook_source: str = Field(description='"database" | "environment" | "none"')

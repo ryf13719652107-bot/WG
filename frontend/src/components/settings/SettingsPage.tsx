@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import type { Account, FeishuNotifySettings, WebUiPasswordStatus } from '../../types';
-import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock, Wallet } from 'lucide-react';
+import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock, Wallet, Clock } from 'lucide-react';
+import type { TradingScheduleConfig } from '../../types';
 
 const FEISHU_DEFAULT: FeishuNotifySettings = {
   webhook_masked: '',
@@ -35,6 +36,13 @@ export default function SettingsPage() {
   const [equityDraft, setEquityDraft] = useState<Record<number, string>>({});
   const [equitySaving, setEquitySaving] = useState<number | null>(null);
   const [equityErr, setEquityErr] = useState('');
+
+  const [schedule, setSchedule] = useState<TradingScheduleConfig | null>(null);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleStart, setScheduleStart] = useState('06:00');
+  const [scheduleEnd, setScheduleEnd] = useState('21:00');
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleErr, setScheduleErr] = useState('');
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
@@ -74,6 +82,38 @@ export default function SettingsPage() {
     setLoadingFeishu(false);
   };
 
+  const loadSchedule = async () => {
+    try {
+      const s = await api.getTradingSchedule();
+      setSchedule(s);
+      setScheduleEnabled(s.enabled);
+      setScheduleStart(s.start_hm);
+      setScheduleEnd(s.end_hm);
+      setScheduleErr('');
+    } catch (e: unknown) {
+      setScheduleErr(e instanceof Error ? e.message : '加载失败');
+    }
+  };
+
+  const handleSaveSchedule = async () => {
+    setScheduleSaving(true);
+    setScheduleErr('');
+    try {
+      const s = await api.updateTradingSchedule({
+        enabled: scheduleEnabled,
+        start_hm: scheduleStart,
+        end_hm: scheduleEnd,
+      });
+      setSchedule(s);
+      setScheduleEnabled(s.enabled);
+      setScheduleStart(s.start_hm);
+      setScheduleEnd(s.end_hm);
+    } catch (e: unknown) {
+      setScheduleErr(e instanceof Error ? e.message : '保存失败');
+    }
+    setScheduleSaving(false);
+  };
+
   const loadWebUi = async () => {
     setLoadingWebUi(true);
     try {
@@ -87,7 +127,7 @@ export default function SettingsPage() {
   };
 
   const load = async () => {
-    await Promise.all([loadAccounts(), loadFeishu(), loadWebUi()]);
+    await Promise.all([loadAccounts(), loadFeishu(), loadWebUi(), loadSchedule()]);
   };
 
   useEffect(() => {
@@ -276,6 +316,65 @@ export default function SettingsPage() {
             </button>
           </div>
         )}
+      </section>
+
+      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
+          <Clock size={16} className="text-cyan-400" />
+          交易时段控制（北京时间）
+        </h3>
+        {scheduleErr && (
+          <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 rounded px-2 py-1.5 mb-3">
+            <AlertCircle size={14} /> {scheduleErr}
+          </div>
+        )}
+        <p className="text-xs text-gray-500 leading-relaxed mb-3">
+          开启后：到<strong className="text-gray-400">收市时间</strong>自动停止全部运行中策略并<strong className="text-gray-400">市价全平</strong>；
+          到<strong className="text-gray-400">开盘时间</strong>自动恢复上一交易日被时段停止的策略（手动停止的不恢复）。
+          盘外可在仪表盘关闭策略，但无法新开策略。
+        </p>
+        <label className="flex items-center gap-2 text-sm text-gray-300 mb-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={scheduleEnabled}
+            onChange={(e) => setScheduleEnabled(e.target.checked)}
+            className="rounded border-gray-600"
+          />
+          启用每日交易时段
+          {schedule && (
+            <span className={`text-xs ${schedule.within_window ? 'text-green-400' : 'text-amber-400'}`}>
+              （当前{schedule.within_window ? '盘内' : '盘外'}）
+            </span>
+          )}
+        </label>
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">开盘</label>
+            <input
+              type="time"
+              value={scheduleStart}
+              onChange={(e) => setScheduleStart(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">收市（到点全平+停策略）</label>
+            <input
+              type="time"
+              value={scheduleEnd}
+              onChange={(e) => setScheduleEnd(e.target.value)}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={scheduleSaving}
+          onClick={() => void handleSaveSchedule()}
+          className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 rounded text-sm"
+        >
+          {scheduleSaving ? '保存中…' : '保存时段设置'}
+        </button>
       </section>
 
       <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">

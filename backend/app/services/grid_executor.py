@@ -2615,6 +2615,7 @@ class GridExecutor:
                 "take_profit": "止盈",
                 "stop_loss": "止损",
                 "stop_loss_dust_restart": "止损减仓过小全平",
+                "schedule_stop": "交易时段收市",
                 "panic_close": "紧急平仓",
                 "margin_stop": "保证金止损",
                 "manual": "手动/其他",

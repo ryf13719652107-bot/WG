@@ -180,13 +180,13 @@ async def _flatten_strategy_orders_and_positions(
     def _log_close_success(msg: str) -> None:
         if close_reason == "panic_close":
             strategy_log_service.success(strategy_id, msg)
-        elif close_reason == "equity_stop":
+        elif close_reason in ("equity_stop", "schedule_stop"):
             strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.success(strategy_id, msg)
 
     def _log_close_error(msg: str) -> None:
-        if close_reason in ("panic_close", "equity_stop"):
+        if close_reason in ("panic_close", "equity_stop", "schedule_stop"):
             strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.error(strategy_id, msg)
@@ -251,6 +251,8 @@ async def _flatten_strategy_orders_and_positions(
             strategy_log_service.info(strategy_id, "紧急平仓: 无持仓需要平仓")
         elif close_reason == "equity_stop":
             strategy_log_service.info(strategy_id, "总资产止损: 无持仓需要平仓")
+        elif close_reason == "schedule_stop":
+            strategy_log_service.info(strategy_id, "交易时段收市: 无持仓需要平仓")
         else:
             strategy_log_service.info(strategy_id, "删除策略: 无持仓需要平仓")
 
@@ -459,6 +461,12 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
             detail="该账户已触发总资产止损，全部策略已停止。请在「系统设置」中重置账户止损状态后再启动。",
         )
 
+    from ..services.trading_schedule import trading_window_allows_start
+    allowed, deny_msg = await trading_window_allows_start()
+    if not allowed:
+        raise HTTPException(status_code=400, detail=deny_msg)
+
+    strategy.stopped_by_schedule = False
     ok = await strategy_scheduler.add_strategy(strategy_id, session=db)
     if not ok:
         await db.refresh(strategy)
@@ -477,7 +485,11 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Strategy not found")
     await strategy_scheduler.remove_strategy(strategy_id)
     await db.refresh(strategy)
+    strategy.stopped_by_schedule = False
+    if strategy.status != "stopped":
+        strategy.status = "stopped"
     await db.commit()
+    await db.refresh(strategy)
     return {"status": "stopped", "id": strategy_id}
 
 

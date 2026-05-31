@@ -123,4 +123,17 @@ export interface DashboardData {
     quantity: number;
     realized_pnl: number;
   }>;
+  trading_window?: {
+    enabled: boolean;
+    start_hm: string;
+    end_hm: string;
+    within_window: boolean;
+  };
+}
+
+export interface TradingScheduleConfig {
+  enabled: boolean;
+  start_hm: string;
+  end_hm: string;
+  within_window: boolean;
 }

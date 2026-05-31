@@ -437,6 +437,16 @@ class StrategyScheduler:
                 coalesce=True,
                 max_instances=1,
             )
+        if not self._aps.get_job("trading_schedule"):
+            from .trading_schedule import trading_schedule_tick
+            self._aps.add_job(
+                trading_schedule_tick,
+                "interval",
+                seconds=60,
+                id="trading_schedule",
+                coalesce=True,
+                max_instances=1,
+            )
 
     def stop(self):
         self._running = False
@@ -448,7 +458,7 @@ class StrategyScheduler:
             if not task.done():
                 task.cancel()
         self._order_watch_tasks.clear()
-        for job_id in ("position_sync", "account_equity_guard"):
+        for job_id in ("position_sync", "account_equity_guard", "trading_schedule"):
             if self._aps.get_job(job_id):
                 try:
                     self._aps.remove_job(job_id)
@@ -494,6 +504,7 @@ class StrategyScheduler:
             await price_stream.subscribe_exchange(ex_type, [strategy.symbol], pub_ex)
 
         strategy.status = "running"
+        strategy.stopped_by_schedule = False
         strategy.started_at = now_beijing()
         baseline = await record_baseline_on_strategy_start(
             strategy.account_id, session, strategy_id=strategy_id,
@@ -635,6 +646,12 @@ class StrategyScheduler:
                     if strategy.status == "running":
                         asyncio.create_task(self.remove_strategy(strategy_id))
                     return
+
+                from .trading_schedule import get_trading_window_config, is_within_trading_window
+                tw_cfg = await get_trading_window_config()
+                if tw_cfg.enabled and not is_within_trading_window(cfg=tw_cfg):
+                    return
+
                 symbol = strategy.symbol
 
             exchange = await self._get_exchange_for_strategy(strategy_id)

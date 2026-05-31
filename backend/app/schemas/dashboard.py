@@ -28,6 +28,13 @@ class StrategyStatItem(BaseModel):
     sl_events: list[SlEventItem] = []
 
 
+class TradingWindowStatus(BaseModel):
+    enabled: bool = False
+    start_hm: str = "06:00"
+    end_hm: str = "21:00"
+    within_window: bool = True
+
+
 class DashboardSnapshot(BaseModel):
     total_balance: float = 0.0
     available_balance: float = 0.0
@@ -54,3 +61,4 @@ class DashboardSnapshot(BaseModel):
     exchange_positions: list[dict] = []
     strategy_stats: list[StrategyStatItem] = []
     special_sl_restarts: list[SpecialSlRestartItem] = []
+    trading_window: TradingWindowStatus = TradingWindowStatus()

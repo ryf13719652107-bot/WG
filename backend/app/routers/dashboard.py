@@ -18,6 +18,7 @@ from ..schemas.dashboard import (
     StrategyStatItem,
     SlEventItem,
     SpecialSlRestartItem,
+    TradingWindowStatus,
 )
 from ..services.exchange_factory import get_exchange_service
 from ..services.exchange_base import BaseExchangeService
@@ -349,6 +350,18 @@ async def get_dashboard(
             realized_pnl=float(row.pnl_sum or 0.0),
         ))
 
+    from ..services.trading_schedule import (
+        get_trading_window_config,
+        is_within_trading_window,
+    )
+    tw_cfg = await get_trading_window_config()
+    trading_window = TradingWindowStatus(
+        enabled=tw_cfg.enabled,
+        start_hm=tw_cfg.start_hm,
+        end_hm=tw_cfg.end_hm,
+        within_window=is_within_trading_window(cfg=tw_cfg),
+    )
+
     return DashboardSnapshot(
         total_balance=round(total_balance, 2),
         available_balance=round(available_balance, 2),
@@ -375,4 +388,5 @@ async def get_dashboard(
         exchange_positions=exchange_positions,
         strategy_stats=strategy_stats,
         special_sl_restarts=special_sl_restarts,
+        trading_window=trading_window,
     )
