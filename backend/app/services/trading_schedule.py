@@ -139,7 +139,17 @@ async def save_trading_window_config(
     return await get_trading_window_config()
 
 
-async def trading_window_allows_start() -> tuple[bool, str]:
+async def trading_window_allows_start(
+    strategy: Strategy | None = None,
+    *,
+    schedule_participate: bool | None = None,
+) -> tuple[bool, str]:
+    """仅对 schedule_participate=True 的策略限制盘外启动。"""
+    participate = schedule_participate
+    if participate is None and strategy is not None:
+        participate = bool(getattr(strategy, "schedule_participate", False))
+    if not participate:
+        return True, ""
     cfg = await get_trading_window_config()
     if not cfg.enabled:
         return True, ""
@@ -147,8 +157,84 @@ async def trading_window_allows_start() -> tuple[bool, str]:
         return True, ""
     return False, (
         f"当前不在允许交易时段（北京时间 {cfg.start_hm}–{cfg.end_hm}）。"
-        f"请在时段内启动，或关闭「交易时段控制」。"
+        f"请在时段内启动，或关闭仪表盘该策略的「时段运行」开关。"
     )
+
+
+async def apply_schedule_participate(strategy_id: int, participate: bool) -> dict:
+    """仪表盘开关：开=参与时段；关=正常连续运行（不受 06:00–21:00 约束）。"""
+    from .scheduler import strategy_scheduler
+    from .log_service import strategy_log_service
+
+    cfg = await get_trading_window_config()
+    in_window = is_within_trading_window(cfg=cfg) if cfg.enabled else True
+
+    async with async_session() as session:
+        s = await session.get(Strategy, strategy_id)
+        if not s:
+            return {"ok": False, "detail": "策略不存在"}
+        s.schedule_participate = bool(participate)
+        if not participate:
+            s.stopped_by_schedule = False
+        elif cfg.enabled and not in_window and s.status != "running":
+            # 盘外打开时段开关且当前未运行：标记次日开盘自动恢复（手动 stop 会清此标志）
+            s.stopped_by_schedule = True
+        await session.commit()
+        symbol = s.symbol
+        direction = s.direction
+        was_running = s.status == "running"
+
+    if participate and cfg.enabled:
+        if in_window and not was_running:
+            ok = await strategy_scheduler.add_strategy(strategy_id)
+            if ok:
+                strategy_log_service.success(
+                    strategy_id,
+                    f"已启用时段运行（{cfg.start_hm}–{cfg.end_hm}），策略已启动",
+                )
+            else:
+                strategy_log_service.warning(strategy_id, "已启用时段运行，但自动启动未完成")
+        elif not in_window and was_running:
+            await scheduled_stop_and_flatten(strategy_id)
+            strategy_log_service.warning(
+                strategy_id,
+                f"已启用时段运行，当前盘外已收市停止",
+            )
+        elif not in_window and not was_running:
+            strategy_log_service.info(
+                strategy_id,
+                f"已启用时段运行：将于次日 {cfg.start_hm} 自动启动，"
+                f"每日 {cfg.start_hm}–{cfg.end_hm} 交易、{cfg.end_hm} 收市全平",
+            )
+        else:
+            strategy_log_service.info(
+                strategy_id,
+                f"已启用时段运行：将在 {cfg.start_hm}–{cfg.end_hm} 内自动交易，"
+                f"{cfg.end_hm} 收市全平",
+            )
+    elif participate:
+        strategy_log_service.info(
+            strategy_id,
+            "已标记为时段运行；请在「系统设置」启用每日交易时段后按配置自动启停",
+        )
+    else:
+        strategy_log_service.info(
+            strategy_id,
+            "已切换为正常连续运行（不受交易时段收市约束）",
+        )
+
+    async with async_session() as session:
+        s = await session.get(Strategy, strategy_id)
+        status = s.status if s else "stopped"
+
+    return {
+        "ok": True,
+        "strategy_id": strategy_id,
+        "schedule_participate": participate,
+        "status": status,
+        "symbol": symbol,
+        "direction": direction,
+    }
 
 
 async def scheduled_stop_and_flatten(strategy_id: int) -> bool:
@@ -194,16 +280,20 @@ async def scheduled_stop_and_flatten(strategy_id: int) -> bool:
         return False
 
 
-async def _any_running_strategy() -> bool:
+async def _any_running_schedule_participant() -> bool:
+    """盘外仍应为收市的：仅检查参与时段且仍在 running 的策略。"""
     async with async_session() as session:
         r = await session.execute(
-            select(Strategy.id).where(Strategy.status == "running").limit(1)
+            select(Strategy.id).where(
+                Strategy.status == "running",
+                Strategy.schedule_participate.is_(True),
+            ).limit(1)
         )
         return r.first() is not None
 
 
 async def on_trading_window_end(*, notify: bool = True) -> int:
-    """收市：停止全部 running 策略并市价全平。"""
+    """收市：停止 schedule_participate=True 且 running 的策略并市价全平。"""
     global _window_was_open
     cfg = await get_trading_window_config()
     if not cfg.enabled:
@@ -211,12 +301,15 @@ async def on_trading_window_end(*, notify: bool = True) -> int:
 
     async with async_session() as session:
         r = await session.execute(
-            select(Strategy.id).where(Strategy.status == "running")
+            select(Strategy.id).where(
+                Strategy.status == "running",
+                Strategy.schedule_participate.is_(True),
+            )
         )
         ids = [int(row[0]) for row in r.all()]
 
     if not ids:
-        logger.info("Trading window end: no running strategies")
+        logger.info("Trading window end: no running schedule-participate strategies")
         _window_was_open = False
         return 0
 
@@ -275,6 +368,7 @@ async def on_trading_window_start() -> int:
             select(Strategy).where(
                 Strategy.status == "stopped",
                 Strategy.stopped_by_schedule.is_(True),
+                Strategy.schedule_participate.is_(True),
             )
         )
         strategies = list(r.scalars().all())
@@ -331,7 +425,7 @@ async def trading_schedule_tick() -> None:
     open_now = is_within_trading_window(cfg=cfg)
 
     # 兜底：盘外仍有 running（边界漏触发或上次收市部分失败）每分钟重试，不重复飞书
-    if not open_now and await _any_running_strategy():
+    if not open_now and await _any_running_schedule_participant():
         await on_trading_window_end(notify=False)
         return
 
@@ -341,11 +435,14 @@ async def trading_schedule_tick() -> None:
         if not open_now:
             async with async_session() as session:
                 r = await session.execute(
-                    select(Strategy.id).where(Strategy.status == "running")
+                    select(Strategy.id).where(
+                        Strategy.status == "running",
+                        Strategy.schedule_participate.is_(True),
+                    )
                 )
                 if r.scalars().first() is not None:
                     logger.warning("Trading window: started outside hours, running end handler")
-                    await on_trading_window_end()
+                    await on_trading_window_end(notify=False)
                     return
         else:
             await on_trading_window_start()

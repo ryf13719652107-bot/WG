@@ -37,6 +37,8 @@ class Strategy(Base):
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'
     stopped_by_schedule: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # 仪表盘「运行」开关：True=参与全局 06:00–21:00 时段；False=不受时段约束、正常连续运行
+    schedule_participate: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing)

@@ -58,7 +58,7 @@ bash deploy.sh
 - **止损平仓比例** `stop_loss_close_pct`：触发后在持仓数量维度平仓的比例 **0–100%**；**0=不挂止损**；**100** 等价于单次触发减满仓（旧行为）；减仓后若有剩余会自动重挂止盈与下一笔加仓链
 - **止盈全平后重开** `reopen_after_close`：仅当 **止盈限价全部平仓** 后是否自动市价重开首单；**止损路径永不自动重开**
 - **账户总资产止损**（`Account.equity_stop_floor_u`）：0=关闭；非 0 时首个策略启动记入 `equity_baseline_u`，每分钟 `account_equity_guard` 检查合约总权益(USDT)，低于下限则对本账户各策略撤单+市价全平（`close_reason=equity_stop`）并停止全部策略
-- **交易时段控制**（`bot_config`：`trading_window_*`，北京时间）：默认 06:00 开盘自动恢复 `stopped_by_schedule` 策略，21:00 收市对全部 running 策略市价全平（`schedule_stop`）并停止；仪表盘表内单策略开关=start/stop API
+- **交易时段控制**（`bot_config`：`trading_window_*`，北京时间）：须在系统设置启用；仅 `schedule_participate=true` 的策略参与——06:00 自动恢复 `stopped_by_schedule`，21:00 收市市价全平（`schedule_stop`）；仪表盘「时段」开关绑定 `POST /schedule-participate`（开=参与时段，关=正常连续运行）；策略页启停不受时段约束（除非该策略已开「时段」且盘外）
 
 ### 多级止损机制
 - **SOFT（80%阈值）**：仅预警，继续交易，记录策略日志

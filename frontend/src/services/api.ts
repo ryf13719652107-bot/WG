@@ -85,6 +85,19 @@ export const api = {
     request(`/strategies/${id}/start`, { method: 'POST' }),
   stopStrategy: (id: number): Promise<{ status: string }> =>
     request(`/strategies/${id}/stop`, { method: 'POST' }),
+  setScheduleParticipate: (
+    id: number,
+    participate: boolean,
+  ): Promise<{
+    ok: boolean;
+    strategy_id: number;
+    schedule_participate: boolean;
+    status: string;
+  }> =>
+    request(`/strategies/${id}/schedule-participate`, {
+      method: 'POST',
+      body: JSON.stringify({ participate }),
+    }),
   panicCloseStrategy: (id: number): Promise<{
     closed: number; failed: number;
     results: Array<{ symbol: string; side: string; status: string; exit_price?: number; error?: string }>;

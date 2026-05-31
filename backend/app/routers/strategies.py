@@ -2,6 +2,7 @@ import asyncio
 import time
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
@@ -16,6 +17,10 @@ from ..services.exchange_factory import get_exchange_service, clear_all_cache
 from ..services.exchange_base import BaseExchangeService
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+
+
+class ScheduleParticipateBody(BaseModel):
+    participate: bool
 
 
 def _panic_symbol_key(sym: str) -> str:
@@ -462,7 +467,7 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
         )
 
     from ..services.trading_schedule import trading_window_allows_start
-    allowed, deny_msg = await trading_window_allows_start()
+    allowed, deny_msg = await trading_window_allows_start(strategy)
     if not allowed:
         raise HTTPException(status_code=400, detail=deny_msg)
 
@@ -476,6 +481,17 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
                 detail="策略启动失败（可能账户止损已触发或交易所不可用），请查看策略日志",
             )
     return {"status": "running", "id": strategy_id}
+
+
+@router.post("/{strategy_id}/schedule-participate")
+async def set_schedule_participate(strategy_id: int, body: ScheduleParticipateBody):
+    """仪表盘开关：participate=true 参与全局交易时段；false 为正常连续运行。"""
+    from ..services.trading_schedule import apply_schedule_participate
+
+    result = await apply_schedule_participate(strategy_id, body.participate)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("detail", "策略不存在"))
+    return result
 
 
 @router.post("/{strategy_id}/stop")

@@ -313,6 +313,7 @@ async def get_dashboard(
             symbol=s.symbol,
             direction=s.direction,
             status=s.status,
+            schedule_participate=bool(getattr(s, "schedule_participate", False)),
             tp_total=tp_total,
             tp_today=tp_today,
             sl_events=sl_events,

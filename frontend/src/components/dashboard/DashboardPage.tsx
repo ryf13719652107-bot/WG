@@ -32,15 +32,19 @@ function SortableTh({
   );
 }
 
-function StrategyToggle({
+function ScheduleParticipateToggle({
   strategyId,
-  running,
-  disabled,
+  participate,
+  twEnabled,
+  startHm,
+  endHm,
   onDone,
 }: {
   strategyId: number;
-  running: boolean;
-  disabled?: boolean;
+  participate: boolean;
+  twEnabled: boolean;
+  startHm: string;
+  endHm: string;
   onDone: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -50,11 +54,7 @@ function StrategyToggle({
     setBusy(true);
     setErr('');
     try {
-      if (running) {
-        await api.stopStrategy(strategyId);
-      } else {
-        await api.startStrategy(strategyId);
-      }
+      await api.setScheduleParticipate(strategyId, !participate);
       onDone();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : '操作失败');
@@ -63,22 +63,27 @@ function StrategyToggle({
     }
   };
 
+  const titleOn = twEnabled
+    ? `按时间运行：每日 ${startHm}–${endHm} 自动交易，${endHm} 收市全平，${startHm} 自动恢复`
+    : '已选择按时间运行（请先在系统设置启用「每日交易时段」）';
+  const titleOff = '24 小时交易：不受交易时段限制，21:00 不会收市';
+
   return (
     <div className="flex flex-col items-center gap-0.5">
       <button
         type="button"
         role="switch"
-        aria-checked={running}
-        disabled={disabled || busy}
+        aria-checked={participate}
+        disabled={busy}
         onClick={toggle}
-        title={running ? '点击停止策略' : '点击启动策略'}
+        title={participate ? titleOn : titleOff}
         className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-          running ? 'bg-green-600' : 'bg-gray-700'
-        } ${disabled || busy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+          participate ? 'bg-green-600' : 'bg-gray-700'
+        } ${busy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
       >
         <span
           className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            running ? 'translate-x-5' : ''
+            participate ? 'translate-x-5' : ''
           }`}
         />
       </button>
@@ -118,7 +123,8 @@ export default function DashboardPage() {
   };
 
   const leverageColor = data.leverage_multiplier > 5 ? 'text-red-400' : data.leverage_multiplier > 2 ? 'text-yellow-400' : 'text-green-400';
-  const canStartBySchedule = !tw?.enabled || tw?.within_window;
+  const twStart = tw?.start_hm ?? '06:00';
+  const twEnd = tw?.end_hm ?? '21:00';
 
   const mainStats = [
     { label: '钱包余额', value: `${data.total_balance.toFixed(2)} USDT`, icon: Wallet, color: 'text-blue-400' },
@@ -149,11 +155,11 @@ export default function DashboardPage() {
           <Clock size={14} />
           {tw.within_window ? (
             <span>
-              交易时段内（北京时间 {tw.start_hm}–{tw.end_hm}），策略可运行
+              交易时段内（北京时间 {tw.start_hm}–{tw.end_hm}）：「运行」开关已开的策略按时段自动交易
             </span>
           ) : (
             <span>
-              当前为盘外时段（允许时段 {tw.start_hm}–{tw.end_hm}），{tw.end_hm} 已收市全平；{tw.start_hm} 将自动恢复被时段停止的策略
+              盘外时段：「运行」开关已开的策略已收市；{tw.start_hm} 自动恢复。开关关闭的策略为 24 小时交易，不受收市影响
             </span>
           )}
         </div>
@@ -201,13 +207,14 @@ export default function DashboardPage() {
                         onClick={() => toggleSort('tp_today')}
                       />
                       <th className="pb-2">止损</th>
-                      <th className="pb-2 text-center w-20">运行</th>
+                      <th className="pb-2 text-center w-20" title="开=按系统设置时间运行；关=24小时交易">
+                        运行
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {sortedStats.map((s) => {
-                      const isRunning = s.status === 'running';
-                      const startBlocked = !isRunning && !canStartBySchedule;
+                      const participate = Boolean(s.schedule_participate);
                       return (
                         <tr key={s.strategy_id} className="border-t border-gray-800">
                           <td className="py-2 font-mono">{s.symbol}</td>
@@ -242,10 +249,12 @@ export default function DashboardPage() {
                             )}
                           </td>
                           <td className="py-2 text-center">
-                            <StrategyToggle
+                            <ScheduleParticipateToggle
                               strategyId={s.strategy_id}
-                              running={isRunning}
-                              disabled={startBlocked}
+                              participate={participate}
+                              twEnabled={Boolean(tw?.enabled)}
+                              startHm={twStart}
+                              endHm={twEnd}
                               onDone={refetchDashboard}
                             />
                           </td>

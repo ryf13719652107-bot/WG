@@ -23,6 +23,7 @@ class StrategyStatItem(BaseModel):
     symbol: str
     direction: str
     status: str
+    schedule_participate: bool = False
     tp_total: int = 0
     tp_today: int = 0
     sl_events: list[SlEventItem] = []

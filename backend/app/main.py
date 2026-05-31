@@ -73,6 +73,8 @@ async def lifespan(app: FastAPI):
     strategy_scheduler.start()
     logger.info("Step 3/5: resume_running_strategies...")
     await strategy_scheduler.resume_running_strategies()
+    from .services.trading_schedule import trading_schedule_tick
+    await trading_schedule_tick()
     logger.info("Step 4/5: start log persistence...")
     from .services.log_service import strategy_log_service
     await strategy_log_service.start_persistence()

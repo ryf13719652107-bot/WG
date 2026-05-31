@@ -649,7 +649,11 @@ class StrategyScheduler:
 
                 from .trading_schedule import get_trading_window_config, is_within_trading_window
                 tw_cfg = await get_trading_window_config()
-                if tw_cfg.enabled and not is_within_trading_window(cfg=tw_cfg):
+                if (
+                    tw_cfg.enabled
+                    and bool(getattr(strategy, "schedule_participate", False))
+                    and not is_within_trading_window(cfg=tw_cfg)
+                ):
                     return
 
                 symbol = strategy.symbol

@@ -106,6 +106,7 @@ export interface DashboardData {
     symbol: string;
     direction: string;
     status: string;
+    schedule_participate?: boolean;
     tp_total: number;
     tp_today: number;
     sl_events: Array<{
