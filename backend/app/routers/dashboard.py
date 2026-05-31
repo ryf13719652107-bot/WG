@@ -13,7 +13,12 @@ from ..models.strategy import Strategy
 from ..models.trade import Trade
 from ..models.bot_config import BotConfig
 from ..models.account import Account
-from ..schemas.dashboard import DashboardSnapshot, StrategyStatItem, SlEventItem
+from ..schemas.dashboard import (
+    DashboardSnapshot,
+    StrategyStatItem,
+    SlEventItem,
+    SpecialSlRestartItem,
+)
 from ..services.exchange_factory import get_exchange_service
 from ..services.exchange_base import BaseExchangeService
 
@@ -312,6 +317,38 @@ async def get_dashboard(
             sl_events=sl_events,
         ))
 
+    special_sl_restarts: list[SpecialSlRestartItem] = []
+    dust_stmt = (
+        select(
+            Trade.strategy_id,
+            Trade.exit_time,
+            func.max(Trade.symbol).label("sym"),
+            func.max(Strategy.symbol).label("strat_sym"),
+            func.max(Strategy.direction).label("direction"),
+            func.max(Trade.exit_price).label("exit_price"),
+            func.coalesce(func.sum(Trade.quantity), 0.0).label("qty_sum"),
+            func.coalesce(func.sum(Trade.realized_pnl), 0.0).label("pnl_sum"),
+        )
+        .join(Strategy, Trade.strategy_id == Strategy.id)
+        .where(Trade.close_reason == "stop_loss_dust_restart")
+        .group_by(Trade.strategy_id, Trade.exit_time)
+        .order_by(Trade.exit_time.desc())
+        .limit(50)
+    )
+    if filter_account_id:
+        dust_stmt = dust_stmt.where(Trade.account_id == filter_account_id)
+    for row in (await db.execute(dust_stmt)).all():
+        ts_key = row.exit_time.strftime("%Y-%m-%d %H:%M:%S") if row.exit_time else ""
+        special_sl_restarts.append(SpecialSlRestartItem(
+            strategy_id=int(row.strategy_id),
+            symbol=str(row.strat_sym or row.sym or ""),
+            direction=str(row.direction or ""),
+            time=ts_key,
+            exit_price=float(row.exit_price or 0.0),
+            quantity=float(row.qty_sum or 0.0),
+            realized_pnl=float(row.pnl_sum or 0.0),
+        ))
+
     return DashboardSnapshot(
         total_balance=round(total_balance, 2),
         available_balance=round(available_balance, 2),
@@ -337,4 +374,5 @@ async def get_dashboard(
         balance_status=balance_status,
         exchange_positions=exchange_positions,
         strategy_stats=strategy_stats,
+        special_sl_restarts=special_sl_restarts,
     )

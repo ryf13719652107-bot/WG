@@ -16,5 +16,10 @@ class Account(Base):
     testnet: Mapped[bool] = mapped_column(Boolean, default=True)
     hedge_mode: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     okx_passphrase_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # 账户总资产止损：equity_stop_floor_u=0 表示关闭；当前总权益 < 下限时停止本账户全部策略
+    equity_stop_floor_u: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    equity_baseline_u: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    equity_baseline_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    equity_stop_triggered: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing, onupdate=now_beijing)

@@ -35,6 +35,7 @@ const defaultData: DashboardData = {
   balance_status: 'no_account',
   exchange_positions: [],
   strategy_stats: [],
+  special_sl_restarts: [],
 };
 
 export const useDashboardStore = create<DashboardState>((set) => ({

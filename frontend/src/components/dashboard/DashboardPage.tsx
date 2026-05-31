@@ -1,18 +1,57 @@
+import { useMemo, useState } from 'react';
 import { useDashboardStore } from '../../store/dashboardStore';
-import { TrendingDown, Layers, BarChart3, Activity, Target, Wallet, PiggyBank, Gauge, TrendingUp } from 'lucide-react';
+import { TrendingDown, Layers, Activity, Wallet, PiggyBank, Gauge, TrendingUp, AlertTriangle, ArrowUpDown } from 'lucide-react';
 
-function PanelRow({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
+type TpSortKey = 'tp_total' | 'tp_today';
+type SortDir = 'asc' | 'desc';
+
+function SortableTh({
+  label,
+  active,
+  dir,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  onClick: () => void;
+}) {
   return (
-    <div className="flex justify-between items-baseline gap-3 py-1.5 border-b border-gray-800/80 last:border-0">
-      <span className="text-gray-500 text-xs shrink-0">{label}</span>
-      <span className={`text-sm font-mono font-medium text-right ${valueClass ?? 'text-gray-200'}`}>{value}</span>
-    </div>
+    <th className="pb-2">
+      <button
+        type="button"
+        onClick={onClick}
+        className={`inline-flex items-center gap-1 hover:text-gray-300 ${active ? 'text-gray-200' : 'text-gray-500'}`}
+      >
+        {label}
+        <ArrowUpDown size={12} className={active ? 'text-cyan-400' : 'opacity-40'} />
+        {active && <span className="text-[10px] text-cyan-400/80">{dir === 'desc' ? '↓' : '↑'}</span>}
+      </button>
+    </th>
   );
 }
 
 export default function DashboardPage() {
   const { data } = useDashboardStore();
   const strategyStats = data.strategy_stats || [];
+  const specialRestarts = data.special_sl_restarts || [];
+
+  const [tpSortKey, setTpSortKey] = useState<TpSortKey>('tp_total');
+  const [tpSortDir, setTpSortDir] = useState<SortDir>('desc');
+
+  const toggleSort = (key: TpSortKey) => {
+    if (tpSortKey === key) {
+      setTpSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setTpSortKey(key);
+      setTpSortDir('desc');
+    }
+  };
+
+  const sortedStats = useMemo(() => {
+    const mul = tpSortDir === 'desc' ? -1 : 1;
+    return [...strategyStats].sort((a, b) => mul * (a[tpSortKey] - b[tpSortKey]));
+  }, [strategyStats, tpSortKey, tpSortDir]);
 
   const leverageColor = data.leverage_multiplier > 5 ? 'text-red-400' : data.leverage_multiplier > 2 ? 'text-yellow-400' : 'text-green-400';
 
@@ -29,8 +68,6 @@ export default function DashboardPage() {
     { label: '活跃策略', value: String(data.active_strategies), icon: Activity, color: 'text-yellow-400' },
     { label: '当前持仓', value: String(data.open_positions), icon: Layers, color: 'text-purple-400' },
   ];
-
-  const fmtPnl = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)} USDT`;
 
   return (
     <div className="space-y-4">
@@ -55,7 +92,7 @@ export default function DashboardPage() {
               <TrendingUp size={14} className="text-green-400" />
               策略止盈/止损概览
             </h3>
-            {strategyStats.length === 0 ? (
+            {sortedStats.length === 0 ? (
               <div className="text-gray-600 text-sm py-4 text-center">暂无策略数据</div>
             ) : (
               <div className="overflow-x-auto">
@@ -65,13 +102,23 @@ export default function DashboardPage() {
                       <th className="pb-2">策略</th>
                       <th className="pb-2">方向</th>
                       <th className="pb-2">状态</th>
-                      <th className="pb-2">总止盈</th>
-                      <th className="pb-2">今日止盈</th>
+                      <SortableTh
+                        label="总止盈"
+                        active={tpSortKey === 'tp_total'}
+                        dir={tpSortDir}
+                        onClick={() => toggleSort('tp_total')}
+                      />
+                      <SortableTh
+                        label="今日止盈"
+                        active={tpSortKey === 'tp_today'}
+                        dir={tpSortDir}
+                        onClick={() => toggleSort('tp_today')}
+                      />
                       <th className="pb-2">止损</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {strategyStats.map((s) => (
+                    {sortedStats.map((s) => (
                       <tr key={s.strategy_id} className="border-t border-gray-800">
                         <td className="py-2 font-mono">{s.symbol}</td>
                         <td className={s.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
@@ -92,11 +139,9 @@ export default function DashboardPage() {
                           {s.sl_events.length === 0 ? (
                             <span className="text-gray-600">-</span>
                           ) : (
-                            s.sl_events.slice(0, 1).map((e, i) => (
-                              <span key={i} className="text-red-400" title={`${e.time} 成交价=${e.exit_price} 数量=${e.quantity}`}>
-                                触发 {s.sl_events.length}次
-                              </span>
-                            ))
+                            <span className="text-red-400" title={s.sl_events.map((e) => `${e.time} @${e.exit_price}`).join('\n')}>
+                              触发 {s.sl_events.length}次
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -112,9 +157,6 @@ export default function DashboardPage() {
                   {strategyStats.filter((s) => s.sl_events.length > 0).map((s) => (
                     <div key={s.strategy_id} className="pl-2 border-l border-red-500/30">
                       <span className="font-mono text-gray-300">{s.symbol}</span>
-                      <span className={`ml-2 ${s.direction === 'long' ? 'text-green-400' : 'text-red-400'}`}>
-                        {s.direction === 'long' ? '多' : '空'}
-                      </span>
                       {s.sl_events.map((e, i) => (
                         <div key={i} className="ml-3 text-gray-500">
                           {e.time} 成交价={e.exit_price?.toFixed(6)} 数量={e.quantity?.toFixed(4)}
@@ -128,52 +170,38 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <aside className="w-full xl:w-72 shrink-0 space-y-3">
+        <aside className="w-full xl:w-80 shrink-0">
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-            <div className="flex items-center gap-2 text-emerald-400/90 text-sm font-semibold mb-2 border-b border-gray-800 pb-2">
-              <Target size={16} />
-              累计数据
+            <div className="flex items-center gap-2 text-amber-400/90 text-sm font-semibold mb-2 border-b border-gray-800 pb-2">
+              <AlertTriangle size={16} />
+              止损减仓过小 · 全平重启
             </div>
-            <div>
-              <PanelRow
-                label="累计已实现"
-                value={fmtPnl(data.total_realized_pnl)}
-                valueClass={data.total_realized_pnl >= 0 ? 'text-emerald-400' : 'text-orange-400'}
-              />
-              <PanelRow label="累计交易" value={`${data.total_trades} 笔`} />
-              <PanelRow label="累计胜率" value={`${data.total_win_rate_pct.toFixed(1)}%`} valueClass="text-indigo-400" />
-              <PanelRow
-                label="多单盈亏(累计)"
-                value={fmtPnl(data.total_pnl_long)}
-                valueClass={data.total_pnl_long >= 0 ? 'text-green-400' : 'text-red-400'}
-              />
-              <PanelRow
-                label="空单盈亏(累计)"
-                value={fmtPnl(data.total_pnl_short)}
-                valueClass={data.total_pnl_short >= 0 ? 'text-green-400' : 'text-red-400'}
-              />
-            </div>
-          </div>
-
-          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-            <div className="flex items-center gap-2 text-cyan-400/90 text-sm font-semibold mb-2 border-b border-gray-800 pb-2">
-              <BarChart3 size={16} />
-              当日数据
-            </div>
-            <div>
-              <PanelRow
-                label="当日盈亏"
-                value={fmtPnl(data.daily_pnl)}
-                valueClass={data.daily_pnl >= 0 ? 'text-green-400' : 'text-red-400'}
-              />
-              <PanelRow label="当日交易" value={`${data.daily_trades} 笔`} />
-              <PanelRow label="当日胜率" value={`${data.win_rate_pct.toFixed(1)}%`} valueClass="text-blue-400" />
-              <PanelRow
-                label="当日盈亏/余额"
-                value={`${data.daily_pnl_pct >= 0 ? '+' : ''}${data.daily_pnl_pct.toFixed(2)}%`}
-                valueClass={data.daily_pnl_pct >= 0 ? 'text-green-400' : 'text-red-400'}
-              />
-            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              加仓层数≥3 后触发止损，若减仓量低于交易所最小下单量，系统会全平并按策略配置重开。
+            </p>
+            {specialRestarts.length === 0 ? (
+              <div className="text-gray-600 text-sm py-6 text-center">暂无记录</div>
+            ) : (
+              <ul className="space-y-2 max-h-[420px] overflow-y-auto text-xs">
+                {specialRestarts.map((e, i) => (
+                  <li key={`${e.strategy_id}-${e.time}-${i}`} className="border-b border-gray-800/80 pb-2 last:border-0">
+                    <div className="flex justify-between gap-2">
+                      <span className="font-mono text-gray-200">{e.symbol}</span>
+                      <span className={e.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
+                        {e.direction === 'long' ? '多' : '空'}
+                      </span>
+                    </div>
+                    <div className="text-gray-500 mt-0.5">{e.time}</div>
+                    <div className="text-gray-400 mt-0.5 font-mono">
+                      价 {e.exit_price?.toFixed(4)} · 量 {e.quantity?.toFixed(4)} · 盈亏{' '}
+                      <span className={e.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
+                        {e.realized_pnl >= 0 ? '+' : ''}{e.realized_pnl?.toFixed(2)}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </aside>
       </div>

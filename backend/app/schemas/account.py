@@ -19,6 +19,17 @@ class AccountCreate(BaseModel):
         return self
 
 
+class AccountEquityGuardUpdate(BaseModel):
+    """账户总资产止损：floor_u=0 关闭；当前总权益 < floor_u 时停止本账户全部策略。"""
+    equity_stop_floor_u: float = Field(ge=0, description="止损下限 USDT，0=不启用")
+
+    @model_validator(mode="after")
+    def floor_is_usdt(self):
+        if self.equity_stop_floor_u < 0:
+            raise ValueError("止损下限不能为负数")
+        return self
+
+
 class AccountResponse(BaseModel):
     id: int
     name: str
@@ -26,6 +37,10 @@ class AccountResponse(BaseModel):
     masked_key: str
     testnet: bool
     hedge_mode: bool
+    equity_stop_floor_u: float = 0.0
+    equity_baseline_u: float | None = None
+    equity_baseline_at: datetime | None = None
+    equity_stop_triggered: bool = False
     created_at: datetime
     updated_at: datetime
 

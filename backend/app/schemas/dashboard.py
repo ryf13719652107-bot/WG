@@ -8,6 +8,16 @@ class SlEventItem(BaseModel):
     quantity: float
 
 
+class SpecialSlRestartItem(BaseModel):
+    strategy_id: int
+    symbol: str
+    direction: str
+    time: str
+    exit_price: float
+    quantity: float
+    realized_pnl: float
+
+
 class StrategyStatItem(BaseModel):
     strategy_id: int
     symbol: str
@@ -43,3 +53,4 @@ class DashboardSnapshot(BaseModel):
     balance_status: str = ""
     exchange_positions: list[dict] = []
     strategy_stats: list[StrategyStatItem] = []
+    special_sl_restarts: list[SpecialSlRestartItem] = []

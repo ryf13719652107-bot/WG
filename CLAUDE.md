@@ -57,6 +57,7 @@ bash deploy.sh
 - **止损触发亏损** `cumulative_loss_threshold_u`：按「当前整仓」推算交易所止损触发价（名义亏损达到约 U）；**0=不挂止损**
 - **止损平仓比例** `stop_loss_close_pct`：触发后在持仓数量维度平仓的比例 **0–100%**；**0=不挂止损**；**100** 等价于单次触发减满仓（旧行为）；减仓后若有剩余会自动重挂止盈与下一笔加仓链
 - **止盈全平后重开** `reopen_after_close`：仅当 **止盈限价全部平仓** 后是否自动市价重开首单；**止损路径永不自动重开**
+- **账户总资产止损**（`Account.equity_stop_floor_u`）：0=关闭；非 0 时首个策略启动记入 `equity_baseline_u`，每分钟 `account_equity_guard` 检查合约总权益(USDT)，低于下限则停止该账户全部策略
 
 ### 多级止损机制
 - **SOFT（80%阈值）**：仅预警，继续交易，记录策略日志
@@ -80,7 +81,9 @@ bash deploy.sh
 - **`websocket_manager.py`**：前端 WebSocket 管理。dashboard 频道 60s 广播快照。
 
 ### 数据库
-- SQLite + aiosqlite，WAL 模式，启动时 `Base.metadata.create_all()` + `init_db()` 内联 ALTER TABLE 迁移
+- SQLite + aiosqlite，**NullPool**（按需短连接）+ WAL + `TickDbSession`（策略 tick 仅在 commit 时占库）+ 调度错峰（`strategy_id % 30s`）
+- 环境变量 `TICK_DB_CONCURRENCY`（默认 48）控制单进程同时 tick 写库并发，适配单账户 50–100 策略
+- 启动时 `Base.metadata.create_all()` + `init_db()` 内联 ALTER TABLE 迁移
 - 模型：Strategy（含网格参数）、Position（含 grid_level/grid_trigger_price/tp_limit_order_id）、Trade（含 grid_level/close_reason）、Account（含 exchange/okx_passphrase）、BotConfig
 - 所有时间存储为无时区的北京时间（`now_beijing()`）
 

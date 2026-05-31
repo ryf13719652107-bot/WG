@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import select
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from ..database import async_session
+from ..database import async_session, db_tick_context, tick_db_session
 from ..models.strategy import Strategy
 from ..models.position import Position
 from ..models.account import Account
@@ -377,13 +377,17 @@ class StrategyScheduler:
         if self._aps.get_job(job_id):
             self._aps.remove_job(job_id)
         import datetime
+        from datetime import timedelta
+        # 按 strategy_id 错峰，避免 50–100 策略在同一秒抢 DB
+        stagger_sec = float(strategy_id % _STRATEGY_TICK_SECONDS)
+        next_run = datetime.datetime.now(tz=BEIJING_TZ) + timedelta(seconds=stagger_sec)
         self._aps.add_job(
             self._execute_strategy,
             "interval",
             seconds=_STRATEGY_TICK_SECONDS,
             id=job_id,
             args=[strategy_id],
-            next_run_time=datetime.datetime.now(tz=BEIJING_TZ),
+            next_run_time=next_run,
             max_instances=1,
             coalesce=True,
         )
@@ -414,16 +418,25 @@ class StrategyScheduler:
     def start(self):
         if not self._aps.running:
             self._aps.start()
-        if self._aps.get_job("position_sync"):
-            return
-        self._aps.add_job(
-            self._position_sync_tick,
-            "interval",
-            seconds=60,
-            id="position_sync",
-            coalesce=True,
-            max_instances=1,
-        )
+        if not self._aps.get_job("position_sync"):
+            self._aps.add_job(
+                self._position_sync_tick,
+                "interval",
+                seconds=60,
+                id="position_sync",
+                coalesce=True,
+                max_instances=1,
+            )
+        if not self._aps.get_job("account_equity_guard"):
+            from .account_equity_guard import equity_guard_tick
+            self._aps.add_job(
+                equity_guard_tick,
+                "interval",
+                seconds=60,
+                id="account_equity_guard",
+                coalesce=True,
+                max_instances=1,
+            )
 
     def stop(self):
         self._running = False
@@ -435,11 +448,12 @@ class StrategyScheduler:
             if not task.done():
                 task.cancel()
         self._order_watch_tasks.clear()
-        if self._aps.get_job("position_sync"):
-            try:
-                self._aps.remove_job("position_sync")
-            except Exception:
-                pass
+        for job_id in ("position_sync", "account_equity_guard"):
+            if self._aps.get_job(job_id):
+                try:
+                    self._aps.remove_job(job_id)
+                except Exception:
+                    pass
         if self._aps.running:
             self._aps.shutdown(wait=False)
 
@@ -453,6 +467,14 @@ class StrategyScheduler:
         strategy = await session.get(Strategy, strategy_id)
         if not strategy:
             logger.warning("Strategy %d not found", strategy_id)
+            return False
+
+        from .account_equity_guard import is_account_trading_halted, record_baseline_on_strategy_start
+        if await is_account_trading_halted(strategy.account_id, session):
+            strategy_log_service.error(
+                strategy_id,
+                "账户已触发总资产止损，无法启动；请在系统设置中重置后再启动",
+            )
             return False
 
         self._register_strategy_job(strategy_id)
@@ -473,10 +495,19 @@ class StrategyScheduler:
 
         strategy.status = "running"
         strategy.started_at = now_beijing()
+        baseline = await record_baseline_on_strategy_start(
+            strategy.account_id, session, strategy_id=strategy_id,
+        )
         await session.commit()
         await session.refresh(strategy)
         logger.info("Strategy %d (%s %s) started", strategy_id, strategy.symbol, strategy.direction)
-        strategy_log_service.success(strategy_id, f"策略启动 — {strategy.symbol} {strategy.direction}")
+        start_msg = f"策略启动 — {strategy.symbol} {strategy.direction}"
+        if baseline and baseline > 0:
+            acc = await session.get(Account, strategy.account_id)
+            floor_u = float(getattr(acc, "equity_stop_floor_u", 0) or 0) if acc else 0
+            if floor_u > 0:
+                start_msg += f"（已记入账户初始总权益≈{baseline:.4f}U，止损下限={floor_u:.4f}U）"
+        strategy_log_service.success(strategy_id, start_msg)
 
         # 启动订单成交实时监听
         exchange = self._exchange_services.get(strategy_id)
@@ -586,18 +617,25 @@ class StrategyScheduler:
             asyncio.create_task(self._execute_strategy(strategy_id))
 
     async def _execute_strategy_impl(self, strategy_id: int):
-        async with async_session() as session:
-            # Master switch
-            switch_result = await session.execute(
-                select(BotConfig).where(BotConfig.key == "master_switch")
-            )
-            switch = switch_result.scalar()
-            if switch and switch.value == "false":
-                return
+        async with db_tick_context():
+            from .account_equity_guard import check_account_equity_guard, is_account_trading_halted
 
-            strategy = await session.get(Strategy, strategy_id)
-            if not strategy or strategy.status != "running":
-                return
+            async with async_session() as session:
+                switch_result = await session.execute(
+                    select(BotConfig).where(BotConfig.key == "master_switch")
+                )
+                switch = switch_result.scalar()
+                if switch and switch.value == "false":
+                    return
+
+                strategy = await session.get(Strategy, strategy_id)
+                if not strategy or strategy.status != "running":
+                    return
+                if await is_account_trading_halted(strategy.account_id, session):
+                    if strategy.status == "running":
+                        asyncio.create_task(self.remove_strategy(strategy_id))
+                    return
+                symbol = strategy.symbol
 
             exchange = await self._get_exchange_for_strategy(strategy_id)
             if not exchange:
@@ -605,22 +643,21 @@ class StrategyScheduler:
                 strategy_log_service.warning(strategy_id, "无法获取交易所连接")
                 return
 
-            # Get current price from stream
-            current_price = await price_stream.get_price(strategy.symbol)
+            current_price = await price_stream.get_price(symbol)
             if not current_price:
                 try:
-                    ticker = await exchange.fetch_ticker(strategy.symbol)
+                    ticker = await exchange.fetch_ticker(symbol)
                     current_price = float(ticker.get("last", 0) or 0)
                 except Exception as e:
                     logger.warning(
                         "Strategy %d: no price for %s: %s",
                         strategy_id,
-                        strategy.symbol,
+                        symbol,
                         e,
                     )
                     strategy_log_service.warning(
                         strategy_id,
-                        f"无法获取 {strategy.symbol} 行情，跳过本周期: {e}",
+                        f"无法获取 {symbol} 行情，跳过本周期: {e}",
                     )
                     return
             if current_price <= 0:
@@ -630,19 +667,26 @@ class StrategyScheduler:
                 )
                 return
 
-            # Execute grid strategy
-            executor = self._executors.get(strategy_id)
-            if not executor:
-                engine = self._engines.get(strategy_id)
-                if not engine:
-                    engine = GridStrategyEngine(strategy)
-                    self._engines[strategy_id] = engine
-                executor = GridExecutor(engine)
-                self._executors[strategy_id] = executor
-
+            tick_session = tick_db_session()
             try:
+                strategy = await tick_session.get(Strategy, strategy_id)
+                if not strategy or strategy.status != "running":
+                    return
+
+                if await check_account_equity_guard(strategy.account_id, from_tick=True):
+                    return
+
+                executor = self._executors.get(strategy_id)
+                if not executor:
+                    engine = self._engines.get(strategy_id)
+                    if not engine:
+                        engine = GridStrategyEngine(strategy)
+                        self._engines[strategy_id] = engine
+                    executor = GridExecutor(engine)
+                    self._executors[strategy_id] = executor
+
                 await executor.process_symbol(
-                    session, strategy, strategy.symbol, exchange, current_price,
+                    tick_session, strategy, symbol, exchange, current_price,
                 )
                 from .order_tracker import order_tracker
                 order_tracker.remove_done(strategy_id, min_age_seconds=3600)
@@ -653,7 +697,9 @@ class StrategyScheduler:
                 logger.error("Strategy %d: processing error: %s", strategy_id, e)
                 strategy_log_service.error(strategy_id, f"执行错误 — {e}")
                 health_monitor.record_failure(strategy_id, str(e))
-                await session.rollback()
+                await tick_session.rollback()
+            finally:
+                await tick_session.close()
 
 
 

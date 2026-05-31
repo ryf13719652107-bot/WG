@@ -246,5 +246,25 @@ class OrderTracker:
                 return True
         return False
 
+    def list_tp_for_symbol(self, strategy_id: int, symbol: str) -> list[CachedOrder]:
+        want = BaseExchangeService._norm_sym(symbol)
+        return [
+            o for o in self.get_pending_by_purpose(strategy_id, "tp")
+            if BaseExchangeService._norm_sym(o.symbol) == want
+        ]
+
+    def discard_tp_for_symbol(
+        self, strategy_id: int, symbol: str, *, keep_order_id: str | None = None,
+    ) -> list[str]:
+        """移除该币种内存中其它止盈挂单缓存，避免补挂后仍用旧数量触发「数量不匹配」死循环。"""
+        keep = (keep_order_id or "").strip()
+        removed: list[str] = []
+        for o in self.list_tp_for_symbol(strategy_id, symbol):
+            if keep and o.order_id == keep:
+                continue
+            self.discard_order(o.order_id)
+            removed.append(o.order_id)
+        return removed
+
 
 order_tracker = OrderTracker()

@@ -443,11 +443,26 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{strategy_id}/start")
 async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
+    from ..services.account_equity_guard import is_account_trading_halted
+
     strategy = await db.get(Strategy, strategy_id)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    await strategy_scheduler.add_strategy(strategy_id, session=db)
+    if await is_account_trading_halted(strategy.account_id, db):
+        raise HTTPException(
+            status_code=400,
+            detail="该账户已触发总资产止损，全部策略已停止。请在「系统设置」中重置账户止损状态后再启动。",
+        )
+
+    ok = await strategy_scheduler.add_strategy(strategy_id, session=db)
+    if not ok:
+        await db.refresh(strategy)
+        if strategy.status != "running":
+            raise HTTPException(
+                status_code=400,
+                detail="策略启动失败（可能账户止损已触发或交易所不可用），请查看策略日志",
+            )
     return {"status": "running", "id": strategy_id}
 
 

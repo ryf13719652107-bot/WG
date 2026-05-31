@@ -45,6 +45,13 @@ export const api = {
     request<Account>('/accounts', { method: 'POST', body: JSON.stringify(data) }),
   listAccounts: (): Promise<Account[]> => request<Account[]>('/accounts'),
   deleteAccount: (id: number): Promise<void> => request<void>(`/accounts/${id}`, { method: 'DELETE' }),
+  updateAccountEquityGuard: (id: number, equity_stop_floor_u: number): Promise<Account> =>
+    request<Account>(`/accounts/${id}/equity-guard`, {
+      method: 'PATCH',
+      body: JSON.stringify({ equity_stop_floor_u }),
+    }),
+  resetAccountEquityGuard: (id: number): Promise<Account> =>
+    request<Account>(`/accounts/${id}/equity-guard/reset`, { method: 'POST' }),
 
   // Strategies
   createStrategy: (data: StrategyFormData): Promise<Strategy> =>

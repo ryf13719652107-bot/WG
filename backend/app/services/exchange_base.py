@@ -274,6 +274,14 @@ class BaseExchangeService(ABC):
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """Set leverage for a symbol on the exchange."""
 
+    async def normalize_limit_price(
+        self, symbol: str, side: str, price: float,
+    ) -> tuple[float, Optional[str]]:
+        """将限价钳在交易所允许的价格带内。返回 (价格, 调整说明或 None)。"""
+        if price <= 0:
+            return 0.0, None
+        return float(price), None
+
     async def normalize_order_amount(self, symbol: str, amount: float) -> float:
         """Contracts amount stepped to exchange lot size (stop-loss math uses order qty).
 
@@ -289,6 +297,30 @@ class BaseExchangeService(ABC):
         if quote_usdt <= 0 or ref_price <= 0:
             return 0.0
         return float(quote_usdt) / float(ref_price)
+
+    async def min_order_amount(self, symbol: str) -> float:
+        """交易所该品种最小下单量（张数/合约数）。未知时返回 0。"""
+        return 0.0
+
+    async def resolve_order_qty_from_usdt_or_min(
+        self, symbol: str, quote_usdt: float, ref_price: float,
+    ) -> tuple[float, str]:
+        """按基础 USDT 换算下单量；若低于最小量则用最小量。
+
+        返回 (数量, 'base_usdt' | 'exchange_min' | 'invalid')。
+        """
+        if quote_usdt <= 0 or ref_price <= 0:
+            return 0.0, "invalid"
+        qty_base = await self.quote_usdt_to_order_amount(symbol, quote_usdt, ref_price)
+        min_qty = await self.min_order_amount(symbol)
+        if min_qty <= 0:
+            q = await self.normalize_order_amount(symbol, qty_base)
+            return q, "base_usdt"
+        if qty_base >= min_qty:
+            q = await self.normalize_order_amount(symbol, qty_base)
+            return q, "base_usdt"
+        q = await self.normalize_order_amount(symbol, min_qty)
+        return q, "exchange_min"
 
     async def linear_contract_ct_val(self, symbol: str) -> float:
         """线性 USDT 永续：未实现盈亏对价格的敏感度里，每张合约的「基础数量」系数（OKX/BN 多为 ctVal/contractSize）。

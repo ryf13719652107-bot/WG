@@ -186,6 +186,21 @@ class BinanceService(BaseExchangeService):
             return list(raw.values())
         return raw or []
 
+    async def min_order_amount(self, symbol: str) -> float:
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
+            lim = (m.get("limits") or {}).get("amount") or {}
+            mn = lim.get("min")
+            if mn is not None:
+                mnf = float(mn)
+                if mnf > 0:
+                    return float(self.exchange.amount_to_precision(formatted, mnf))
+        except Exception as e:
+            logger.warning("binance.min_order_amount(%s): %s", symbol, e)
+        return 0.0
+
     async def normalize_order_amount(self, symbol: str, amount: float) -> float:
         if amount <= 0:
             return 0.0
@@ -193,6 +208,9 @@ class BinanceService(BaseExchangeService):
         try:
             await self.exchange.load_markets()
             step = float(self.exchange.amount_to_precision(formatted, amount))
+            mnf = await self.min_order_amount(symbol)
+            if mnf > 0:
+                step = float(self.exchange.amount_to_precision(formatted, max(step, mnf)))
             return max(0.0, step)
         except Exception as e:
             logger.warning("normalize_order_amount(%s): %s", symbol, e)

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import type { Account, FeishuNotifySettings, WebUiPasswordStatus } from '../../types';
-import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock } from 'lucide-react';
+import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock, Wallet } from 'lucide-react';
 
 const FEISHU_DEFAULT: FeishuNotifySettings = {
   webhook_masked: '',
@@ -32,6 +32,9 @@ export default function SettingsPage() {
   const [webUiDraft, setWebUiDraft] = useState('');
   const [webUiSaveErr, setWebUiSaveErr] = useState('');
   const [webUiSaving, setWebUiSaving] = useState(false);
+  const [equityDraft, setEquityDraft] = useState<Record<number, string>>({});
+  const [equitySaving, setEquitySaving] = useState<number | null>(null);
+  const [equityErr, setEquityErr] = useState('');
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
@@ -39,6 +42,11 @@ export default function SettingsPage() {
     try {
       const result = await api.listAccounts();
       setAccounts(result);
+      const drafts: Record<number, string> = {};
+      for (const a of result) {
+        drafts[a.id] = String(a.equity_stop_floor_u ?? 0);
+      }
+      setEquityDraft(drafts);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(`加载账户失败: ${msg}`);
@@ -104,6 +112,37 @@ export default function SettingsPage() {
     } catch (e: any) {
       setSaveError(`保存失败: ${e.message}`);
     }
+  };
+
+  const handleSaveEquityGuard = async (accountId: number) => {
+    const raw = (equityDraft[accountId] ?? '0').trim();
+    const floor = parseFloat(raw);
+    if (Number.isNaN(floor) || floor < 0) {
+      setEquityErr('止损下限须为 ≥0 的数字');
+      return;
+    }
+    setEquitySaving(accountId);
+    setEquityErr('');
+    try {
+      await api.updateAccountEquityGuard(accountId, floor);
+      await loadAccounts();
+    } catch (e: unknown) {
+      setEquityErr(e instanceof Error ? e.message : String(e));
+    }
+    setEquitySaving(null);
+  };
+
+  const handleResetEquityGuard = async (accountId: number) => {
+    if (!confirm('重置后将清除「已触发」标记与初始总权益记录；下次启动策略时会重新记入。确定？')) return;
+    setEquitySaving(accountId);
+    setEquityErr('');
+    try {
+      await api.resetAccountEquityGuard(accountId);
+      await loadAccounts();
+    } catch (e: unknown) {
+      setEquityErr(e instanceof Error ? e.message : String(e));
+    }
+    setEquitySaving(null);
   };
 
   const handleDelete = async (id: number) => {
@@ -350,26 +389,82 @@ export default function SettingsPage() {
 
         {loadingAccounts && <p className="text-gray-500 text-sm py-4">加载中...</p>}
 
+        {equityErr && (
+          <div className="flex items-center gap-2 text-red-400 text-xs mb-2 bg-red-900/20 rounded px-2 py-1.5">
+            <AlertCircle size={14} /> {equityErr}
+          </div>
+        )}
+
         {!loadingAccounts && accounts.map((a) => (
-          <div key={a.id} className="flex items-center justify-between py-2 border-b border-gray-800">
-            <div>
-              <span className="font-medium">{a.name}</span>
-              <span className={`ml-2 text-xs px-2 py-0.5 rounded ${a.testnet ? 'bg-yellow-600/20 text-yellow-400' : 'bg-green-600/20 text-green-400'}`}>
-                {a.testnet ? '测试网' : '实盘'}
-              </span>
-              <span className="ml-1 text-xs px-2 py-0.5 rounded bg-purple-600/20 text-purple-400">
-                {(a as any).exchange === 'okx' ? 'OKX' : '币安'}
-              </span>
-              <span className={`ml-1 text-xs px-2 py-0.5 rounded ${a.hedge_mode ? 'bg-blue-600/20 text-blue-400' : 'bg-purple-600/20 text-purple-400'}`}>
-                {a.hedge_mode ? '双向持仓' : '单向持仓'}
-              </span>
-              <div className="text-xs text-gray-500 mt-0.5">
-                API密钥: {a.masked_key}
+          <div key={a.id} className="py-3 border-b border-gray-800 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-medium">{a.name}</span>
+                <span className={`ml-2 text-xs px-2 py-0.5 rounded ${a.testnet ? 'bg-yellow-600/20 text-yellow-400' : 'bg-green-600/20 text-green-400'}`}>
+                  {a.testnet ? '测试网' : '实盘'}
+                </span>
+                <span className="ml-1 text-xs px-2 py-0.5 rounded bg-purple-600/20 text-purple-400">
+                  {a.exchange === 'okx' ? 'OKX' : '币安'}
+                </span>
+                <span className={`ml-1 text-xs px-2 py-0.5 rounded ${a.hedge_mode ? 'bg-blue-600/20 text-blue-400' : 'bg-purple-600/20 text-purple-400'}`}>
+                  {a.hedge_mode ? '双向持仓' : '单向持仓'}
+                </span>
+                {a.equity_stop_triggered && (
+                  <span className="ml-1 text-xs px-2 py-0.5 rounded bg-red-600/30 text-red-300">
+                    总资产止损已触发
+                  </span>
+                )}
+                <div className="text-xs text-gray-500 mt-0.5">
+                  API密钥: {a.masked_key}
+                </div>
               </div>
+              <button onClick={() => handleDelete(a.id)} className="p-1.5 text-red-400 hover:bg-red-600/20 rounded shrink-0">
+                <Trash2 size={16} />
+              </button>
             </div>
-            <button onClick={() => handleDelete(a.id)} className="p-1.5 text-red-400 hover:bg-red-600/20 rounded">
-              <Trash2 size={16} />
-            </button>
+            <div className="pl-0.5 space-y-1.5 bg-gray-800/50 rounded-lg p-2.5">
+              <div className="flex items-center gap-2 text-xs text-gray-400">
+                <Wallet size={14} className="text-orange-400 shrink-0" />
+                <span className="font-medium text-gray-300">总资产止损（账户级）</span>
+              </div>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                填 <strong className="text-gray-400">0</strong> 表示关闭。非 0 时：本账户<strong className="text-gray-400">第一个</strong>策略启动会记入当时总权益；
+                之后每分钟检查，若合约账户总权益（USDT）&lt; 下限，则<strong className="text-gray-400">停止本账户全部运行中策略</strong>并禁止再启动，直至重置。
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs text-gray-500">止损下限 (USDT)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={equityDraft[a.id] ?? '0'}
+                  onChange={(e) => setEquityDraft((d) => ({ ...d, [a.id]: e.target.value }))}
+                  className="w-28 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
+                />
+                <button
+                  type="button"
+                  disabled={equitySaving === a.id}
+                  onClick={() => void handleSaveEquityGuard(a.id)}
+                  className="px-2 py-1 text-xs bg-orange-600/80 hover:bg-orange-600 rounded disabled:opacity-50"
+                >
+                  {equitySaving === a.id ? '…' : '保存'}
+                </button>
+                <button
+                  type="button"
+                  disabled={equitySaving === a.id}
+                  onClick={() => void handleResetEquityGuard(a.id)}
+                  className="px-2 py-1 text-xs border border-gray-600 rounded hover:bg-gray-700 disabled:opacity-50"
+                >
+                  重置状态
+                </button>
+              </div>
+              {(a.equity_baseline_u != null && a.equity_baseline_u > 0) && (
+                <p className="text-xs text-gray-500">
+                  已记入初始总权益: <span className="text-gray-300">{a.equity_baseline_u.toFixed(4)} USDT</span>
+                  {a.equity_baseline_at ? ` · ${a.equity_baseline_at.replace('T', ' ').slice(0, 19)}` : ''}
+                </p>
+              )}
+            </div>
           </div>
         ))}
 

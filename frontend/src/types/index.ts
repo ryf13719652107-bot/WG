@@ -19,6 +19,12 @@ export interface Account {
   masked_key: string;
   testnet: boolean;
   hedge_mode: boolean;
+  /** 总资产止损下限 USDT；0=关闭。当前总权益低于该值时停止本账户全部策略 */
+  equity_stop_floor_u: number;
+  /** 策略启动时记入的初始总权益 */
+  equity_baseline_u: number | null;
+  equity_baseline_at: string | null;
+  equity_stop_triggered: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -107,5 +113,14 @@ export interface DashboardData {
       exit_price: number;
       quantity: number;
     }>;
+  }>;
+  special_sl_restarts: Array<{
+    strategy_id: number;
+    symbol: string;
+    direction: string;
+    time: string;
+    exit_price: number;
+    quantity: number;
+    realized_pnl: number;
   }>;
 }

@@ -159,6 +159,24 @@ class OkxService(BaseExchangeService):
             return list(raw.values())
         return raw or []
 
+    async def _market_min_amount(self, symbol: str) -> float:
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            m = self.exchange.market(formatted)
+            lim = (m.get("limits") or {}).get("amount") or {}
+            mn = lim.get("min")
+            if mn is not None:
+                mnf = float(mn)
+                if mnf > 0:
+                    return float(self.exchange.amount_to_precision(formatted, mnf))
+        except Exception as e:
+            logger.warning("OKX _market_min_amount(%s): %s", symbol, e)
+        return 0.0
+
+    async def min_order_amount(self, symbol: str) -> float:
+        return await self._market_min_amount(symbol)
+
     async def normalize_order_amount(self, symbol: str, amount: float) -> float:
         if amount <= 0:
             return 0.0
@@ -167,15 +185,9 @@ class OkxService(BaseExchangeService):
             await self.exchange.load_markets()
             m = self.exchange.market(formatted)
             step = float(self.exchange.amount_to_precision(formatted, amount))
-            lim = (m.get("limits") or {}).get("amount") or {}
-            mn = lim.get("min")
-            if mn is not None:
-                try:
-                    mnf = float(mn)
-                    if mnf > 0:
-                        step = float(self.exchange.amount_to_precision(formatted, max(step, mnf)))
-                except (TypeError, ValueError):
-                    pass
+            mnf = await self._market_min_amount(symbol)
+            if mnf > 0:
+                step = float(self.exchange.amount_to_precision(formatted, max(step, mnf)))
             return max(0.0, step)
         except Exception as e:
             logger.warning("OKX normalize_order_amount(%s): %s", symbol, e)
@@ -207,6 +219,54 @@ class OkxService(BaseExchangeService):
         except Exception as e:
             logger.warning("OKX quote_usdt_to_order_amount(%s): %s", symbol, e)
             return float(quote_usdt) / float(ref_price)
+
+    async def fetch_price_limits(self, symbol: str) -> tuple[float, float]:
+        """OKX 公开接口：返回 (最高买价 buyLmt, 最低卖价 sellLmt)。未知时为 (0, 0)。"""
+        inst = self._to_okx_inst_id(symbol)
+        try:
+            raw = await retry_with_backoff(
+                "okx.public_price_limit",
+                lambda: self.exchange.publicGetPublicPriceLimit({"instId": inst}),
+            )
+            rows = (raw or {}).get("data") or []
+            if not rows:
+                return 0.0, 0.0
+            row = rows[0] if isinstance(rows[0], dict) else {}
+            buy_lmt = float(row.get("buyLmt") or 0)
+            sell_lmt = float(row.get("sellLmt") or 0)
+            return buy_lmt, sell_lmt
+        except Exception as e:
+            logger.debug("OKX fetch_price_limits(%s): %s", symbol, e)
+            return 0.0, 0.0
+
+    async def normalize_limit_price(
+        self, symbol: str, side: str, price: float,
+    ) -> tuple[float, Optional[str]]:
+        if price <= 0:
+            return 0.0, None
+        formatted = self._format_symbol(symbol)
+        try:
+            await self.exchange.load_markets()
+            px = float(self.exchange.price_to_precision(formatted, price))
+        except Exception as e:
+            logger.debug("OKX price_to_precision(%s): %s", symbol, e)
+            px = float(price)
+
+        max_buy, min_sell = await self.fetch_price_limits(symbol)
+        side_l = (side or "").lower()
+        if side_l == "buy" and max_buy > 0 and px > max_buy:
+            try:
+                px = float(self.exchange.price_to_precision(formatted, max_buy))
+            except Exception:
+                px = max_buy
+            return px, f"OKX限价带:最高买价={max_buy}"
+        if side_l == "sell" and min_sell > 0 and px < min_sell:
+            try:
+                px = float(self.exchange.price_to_precision(formatted, min_sell))
+            except Exception:
+                px = min_sell
+            return px, f"OKX限价带:最低卖价={min_sell}"
+        return px, None
 
     async def linear_contract_ct_val(self, symbol: str) -> float:
         formatted = self._format_symbol(symbol)
