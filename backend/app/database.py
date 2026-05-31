@@ -90,9 +90,12 @@ class TickDbSession:
         s = await self._open()
         s.add(obj)
 
-    async def refresh(self, obj: Any) -> None:
+    async def refresh(self, obj: Any) -> Any:
+        """commit 后会话已关闭，须 merge 后再 refresh。"""
         s = await self._open()
-        await s.refresh(obj)
+        merged = await s.merge(obj)
+        await s.refresh(merged)
+        return merged
 
     async def commit(self) -> None:
         s = await self._open()

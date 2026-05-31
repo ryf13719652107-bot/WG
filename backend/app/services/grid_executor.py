@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from ..config import now_beijing
-from ..db_helpers import db_add, db_commit, db_refresh
+from ..db_helpers import db_add, db_commit
 from ..database import db_session_nested_safe
 from ..models.position import Position
 from ..models.trade import Trade
@@ -417,7 +417,7 @@ class GridExecutor:
         await db_add(session, pos)
         positions.append(pos)
         strategy = await db_commit(session, strategy=strategy, positions=positions) or strategy
-        await db_refresh(session, pos)
+        pos = positions[-1]
         self._clear_positions_add_oid(positions)
 
         strategy_log_service.success(
@@ -1610,7 +1610,6 @@ class GridExecutor:
         )
         await db_add(session, pos)
         await _c(positions=[pos])
-        await db_refresh(session, pos)
 
         order_tracker.add(
             str(order.get("id", "")), symbol, side_raw, "market",
@@ -1921,13 +1920,11 @@ class GridExecutor:
             ],
         )
 
-        await self._close_all(
+        strategy = await self._close_all(
             session, strategy, symbol, exchange, positions, current_price, "take_profit",
             exit_price_override=tp_exit,
             positions_already_closed=True,
-        )
-
-        await db_refresh(session, strategy)
+        ) or strategy
 
         if strategy.reopen_after_close and strategy.status == "running":
             strategy_log_service.info(
@@ -2304,13 +2301,12 @@ class GridExecutor:
         )
         order_tracker.clear_strategy(strategy.id)
 
-        await self._close_all(
+        strategy = await self._close_all(
             session, strategy, symbol, exchange, positions, current_price,
             self.CLOSE_REASON_SL_DUST_RESTART,
             exit_price_override=sl_exit if sl_exit > 0 else None,
             positions_already_closed=False,
-        )
-        await db_refresh(session, strategy)
+        ) or strategy
 
         if strategy.reopen_after_close and strategy.status == "running":
             strategy_log_service.info(
@@ -2530,6 +2526,7 @@ class GridExecutor:
         exit_price_override: float | None = None,
         positions_already_closed: bool = False,
     ):
+        """全平记账。返回 db_commit 后 merge 的 strategy（Tick 会话下勿再 refresh 旧引用）。"""
         try:
             pre_purge = await self._purge_exchange_open_orders(exchange, symbol, strategy.id, strategy.direction)
             if pre_purge > 0:
@@ -2611,7 +2608,7 @@ class GridExecutor:
             await db_add(session, trade)
             pos.closed_at = now
 
-        await db_commit(session, strategy=strategy, positions=positions)
+        strategy = await db_commit(session, strategy=strategy, positions=positions) or strategy
         n_pos = len(positions)
         if n_pos > 0:
             reason_label = {
@@ -2639,3 +2636,4 @@ class GridExecutor:
         except Exception as e:
             logger.warning("purge after close_all strategy=%d: %s", strategy.id, e)
         logger.info("Closed all %s positions for strategy=%d reason=%s exchange_ok=%s", symbol, strategy.id, reason, close_success)
+        return strategy

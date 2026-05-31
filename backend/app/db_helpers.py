@@ -17,11 +17,12 @@ async def db_add(session: Any, obj: Any) -> None:
         session.add(obj)
 
 
-async def db_refresh(session: Any, obj: Any) -> None:
+async def db_refresh(session: Any, obj: Any) -> Any:
+    """刷新 ORM 状态；TickDbSession 下返回 merge 后的实例（请用返回值覆盖原引用）。"""
     if is_tick_session(session):
-        await session.refresh(obj)
-    else:
-        await session.refresh(obj)
+        return await session.refresh(obj)
+    await session.refresh(obj)
+    return obj
 
 
 async def db_commit(
