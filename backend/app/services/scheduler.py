@@ -534,7 +534,8 @@ class StrategyScheduler:
 
         return True
 
-    async def remove_strategy(self, strategy_id: int):
+    async def detach_strategy(self, strategy_id: int):
+        """仅摘除调度任务与订单监听，不撤交易所单、不清 tracker、不改 DB 状态。"""
         job_id = f"strategy_{strategy_id}"
         self._strategy_jobs.pop(strategy_id, None)
         self._engines.pop(strategy_id, None)
@@ -545,9 +546,11 @@ class StrategyScheduler:
             task.cancel()
         if self._aps.get_job(job_id):
             self._aps.remove_job(job_id)
-
-        exchange = self._exchange_services.pop(strategy_id, None)
+        self._exchange_services.pop(strategy_id, None)
         self._strategy_locks.pop(strategy_id, None)
+
+    async def remove_strategy(self, strategy_id: int, *, cancel_exchange_orders: bool = True):
+        await self.detach_strategy(strategy_id)
 
         async with async_session() as session:
             strategy = await session.get(Strategy, strategy_id)
@@ -555,8 +558,9 @@ class StrategyScheduler:
                 return
 
             symbol = strategy.symbol
+            exchange = await get_exchange_service(strategy.account_id)
 
-            if exchange:
+            if exchange and cancel_exchange_orders:
                 try:
                     ex_id = getattr(exchange, "exchange_id", "") or ""
                     hedge = getattr(exchange, "hedge_mode", True)
@@ -592,12 +596,16 @@ class StrategyScheduler:
                 except Exception as e:
                     logger.warning("Strategy %d stop: failed to cancel orders: %s", strategy_id, e)
 
-            from .order_tracker import order_tracker
-            order_tracker.clear_strategy(strategy_id)
-
-            strategy.status = "stopped"
-            await session.commit()
-        logger.info("Strategy %d stopped", strategy_id)
+                from .order_tracker import order_tracker
+                order_tracker.clear_strategy(strategy_id)
+                strategy.status = "stopped"
+                await session.commit()
+                logger.info("Strategy %d stopped", strategy_id)
+            else:
+                logger.info(
+                    "Strategy %d detached (orders/positions handled by schedule flatten)",
+                    strategy_id,
+                )
 
     async def _get_exchange_for_strategy(self, strategy_id: int) -> Optional[BaseExchangeService]:
         if strategy_id in self._exchange_services:

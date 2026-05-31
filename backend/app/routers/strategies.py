@@ -52,6 +52,26 @@ def _flatten_cancel_open_order_task(exchange, row: dict, symbol: str):
     return None
 
 
+async def _other_running_strategy_ids_on_leg(
+    db: AsyncSession,
+    strategy: Strategy,
+    *,
+    exclude_id: int | None = None,
+) -> list[int]:
+    """同账户、同合约、同方向且仍在 running 的其它策略（含 24 小时策略）。"""
+    ex_id = exclude_id if exclude_id is not None else strategy.id
+    r = await db.execute(
+        select(Strategy.id).where(
+            Strategy.account_id == strategy.account_id,
+            Strategy.symbol == strategy.symbol,
+            Strategy.direction == strategy.direction,
+            Strategy.status == "running",
+            Strategy.id != ex_id,
+        )
+    )
+    return [int(row[0]) for row in r.all()]
+
+
 async def _flatten_strategy_orders_and_positions(
     strategy: Strategy,
     db: AsyncSession,
@@ -84,6 +104,18 @@ async def _flatten_strategy_orders_and_positions(
     dir_low = direction.lower()
     pos_filter = dir_low if hedge else None
 
+    isolate_leg = False
+    if close_reason == "schedule_stop":
+        others = await _other_running_strategy_ids_on_leg(db, strategy)
+        isolate_leg = len(others) > 0
+        if isolate_leg:
+            logging.info(
+                "_flatten_strategy schedule_stop %d: same leg still running strategies %s — "
+                "scoped cancel + partial close only",
+                strategy_id,
+                others,
+            )
+
     cancel_tasks: list = []
 
     if use_order_tracker:
@@ -101,8 +133,10 @@ async def _flatten_strategy_orders_and_positions(
         await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
     # OKX：普通限价与触发/计划单分域，仅靠 tracker + 单次 fetch_open_orders 撤不干净
-    if getattr(exchange, "exchange_id", None) == "okx" and hasattr(
-        exchange, "cancel_all_pending_orders_for_symbol"
+    if (
+        not isolate_leg
+        and getattr(exchange, "exchange_id", None) == "okx"
+        and hasattr(exchange, "cancel_all_pending_orders_for_symbol")
     ):
         try:
             n_bulk = await exchange.cancel_all_pending_orders_for_symbol(symbol, pos_filter)
@@ -115,21 +149,22 @@ async def _flatten_strategy_orders_and_positions(
         except Exception as e:
             logging.warning("_flatten_strategy: OKX cancel_all_pending_orders strategy=%d: %s", strategy_id, e)
 
-    try:
-        oo_list = await exchange.fetch_open_orders(symbol)
-        oo_cancel = []
-        for oo in oo_list or []:
-            if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
-                continue
-            task = _flatten_cancel_open_order_task(exchange, oo, symbol)
-            if task is not None:
-                oo_cancel.append(task)
-        if oo_cancel:
-            await asyncio.gather(*oo_cancel, return_exceptions=True)
-    except Exception as e:
-        logging.warning("_flatten_strategy: fetch_open_orders/cancel strategy=%d: %s", strategy_id, e)
+    if not isolate_leg:
+        try:
+            oo_list = await exchange.fetch_open_orders(symbol)
+            oo_cancel = []
+            for oo in oo_list or []:
+                if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
+                    continue
+                task = _flatten_cancel_open_order_task(exchange, oo, symbol)
+                if task is not None:
+                    oo_cancel.append(task)
+            if oo_cancel:
+                await asyncio.gather(*oo_cancel, return_exceptions=True)
+        except Exception as e:
+            logging.warning("_flatten_strategy: fetch_open_orders/cancel strategy=%d: %s", strategy_id, e)
 
-    if hasattr(exchange, "cancel_all_open_algo_orders"):
+    if not isolate_leg and hasattr(exchange, "cancel_all_open_algo_orders"):
         try:
             n = await exchange.cancel_all_open_algo_orders(symbol, pos_filter)
             if n:
@@ -171,7 +206,10 @@ async def _flatten_strategy_orders_and_positions(
 
     ex_avg_entry = exchange_entry_cost / exchange_qty if exchange_qty > 1e-12 else 0.0
 
-    raw_close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
+    if isolate_leg:
+        raw_close_qty = total_qty
+    else:
+        raw_close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
     try:
         close_qty = await exchange.normalize_order_amount(symbol, raw_close_qty)
     except Exception as e:
@@ -198,17 +236,19 @@ async def _flatten_strategy_orders_and_positions(
 
     if has_position_hint:
         # 优先 close_position：按交易所实时张数平仓，避免 normalize 为 0 或数量与 DB 不一致
-        try:
-            order_cp = await exchange.close_position(symbol, direction)
-            if order_cp:
-                close_success = True
-                exit_price = BaseExchangeService.avg_fill_price_from_order(order_cp)
-                _log_close_success(
-                    f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(close_position): "
-                    f"{symbol} 价格={exit_price:.4f}",
-                )
-        except Exception as e:
-            logging.error("_flatten_strategy close_position strategy=%d %s: %s", strategy_id, symbol, e)
+        # 同腿仍有其它 running 策略（如 24 小时）时禁止全腿平仓，仅按本策略 DB 数量减仓
+        if not isolate_leg:
+            try:
+                order_cp = await exchange.close_position(symbol, direction)
+                if order_cp:
+                    close_success = True
+                    exit_price = BaseExchangeService.avg_fill_price_from_order(order_cp)
+                    _log_close_success(
+                        f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(close_position): "
+                        f"{symbol} 价格={exit_price:.4f}",
+                    )
+            except Exception as e:
+                logging.error("_flatten_strategy close_position strategy=%d %s: %s", strategy_id, symbol, e)
 
         if not close_success and close_qty > 1e-12:
             try:
@@ -228,7 +268,7 @@ async def _flatten_strategy_orders_and_positions(
                     f"{'紧急平仓' if close_reason == 'panic_close' else '删除策略平仓'}失败: {e}",
                 )
 
-        if not close_success and exchange_qty > 1e-12:
+        if not isolate_leg and not close_success and exchange_qty > 1e-12:
             try:
                 order2 = await exchange.close_position(symbol, direction)
                 if order2:

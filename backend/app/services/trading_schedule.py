@@ -238,15 +238,29 @@ async def apply_schedule_participate(strategy_id: int, participate: bool) -> dic
 
 
 async def scheduled_stop_and_flatten(strategy_id: int) -> bool:
-    """收市：撤单、市价全平、标记 stopped_by_schedule。"""
+    """收市：仅 schedule_participate 策略；撤止盈/止损/加仓挂单并平仓。"""
     from .scheduler import strategy_scheduler
     from .log_service import strategy_log_service
     from ..routers.strategies import _flatten_strategy_orders_and_positions
 
+    async with async_session() as session:
+        s = await session.get(Strategy, strategy_id)
+        if not s:
+            return False
+        if not bool(getattr(s, "schedule_participate", False)):
+            logger.warning(
+                "schedule_stop skipped strategy %d: schedule_participate is off",
+                strategy_id,
+            )
+            return False
+        if s.status != "running":
+            logger.info("schedule_stop skipped strategy %d: status=%s", strategy_id, s.status)
+            return False
+
     try:
-        await strategy_scheduler.remove_strategy(strategy_id)
+        await strategy_scheduler.detach_strategy(strategy_id)
     except Exception as e:
-        logger.error("schedule stop remove_strategy %d: %s", strategy_id, e)
+        logger.error("schedule stop detach_strategy %d: %s", strategy_id, e)
 
     try:
         async with async_session() as session:
@@ -264,7 +278,7 @@ async def scheduled_stop_and_flatten(strategy_id: int) -> bool:
             await session.commit()
             cfg = await get_trading_window_config()
             detail = (
-                f"交易时段收市（{cfg.end_hm}）：已撤单并"
+                f"交易时段收市（{cfg.end_hm}）：已撤销止盈/止损/加仓挂单并"
                 f"{'市价平仓成功' if close_ok else '尝试市价平仓未完全确认'}"
                 f" ({s.symbol} {s.direction}"
                 + (f" 数量≈{qty:.4f}" if qty > 0 else "")
