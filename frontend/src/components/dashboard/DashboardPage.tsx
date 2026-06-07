@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { useDashboardStore } from '../../store/dashboardStore';
-import { api } from '../../services/api';
 import { TrendingDown, Layers, Activity, Wallet, PiggyBank, Gauge, TrendingUp, AlertTriangle, ArrowUpDown } from 'lucide-react';
 
 type TpSortKey = 'tp_total' | 'tp_today';
@@ -32,69 +31,13 @@ function SortableTh({
   );
 }
 
-function StrategyToggle({
-  strategyId,
-  running,
-  disabled,
-  onDone,
-}: {
-  strategyId: number;
-  running: boolean;
-  disabled?: boolean;
-  onDone: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-
-  const toggle = async () => {
-    setBusy(true);
-    setErr('');
-    try {
-      if (running) {
-        await api.stopStrategy(strategyId);
-      } else {
-        await api.startStrategy(strategyId);
-      }
-      onDone();
-    } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : '操作失败');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col items-center gap-0.5">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={running}
-        disabled={disabled || busy}
-        onClick={toggle}
-        title={running ? '点击停止策略' : '点击启动策略'}
-        className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-          running ? 'bg-green-600' : 'bg-gray-700'
-        } ${disabled || busy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-      >
-        <span
-          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            running ? 'translate-x-5' : ''
-          }`}
-        />
-      </button>
-      {err && <span className="text-[10px] text-red-400 max-w-[88px] text-center leading-tight">{err}</span>}
-    </div>
-  );
-}
-
 export default function DashboardPage() {
-  const { data, selectedAccountId } = useDashboardStore();
+  const { data } = useDashboardStore();
   const strategyStats = data.strategy_stats || [];
   const specialRestarts = data.special_sl_restarts || [];
 
   const [tpSortKey, setTpSortKey] = useState<TpSortKey>('tp_total');
   const [tpSortDir, setTpSortDir] = useState<SortDir>('desc');
-  const [refreshKey, setRefreshKey] = useState(0);
 
   const toggleSort = (key: TpSortKey) => {
     if (tpSortKey === key) {
@@ -108,13 +51,7 @@ export default function DashboardPage() {
   const sortedStats = useMemo(() => {
     const mul = tpSortDir === 'desc' ? -1 : 1;
     return [...strategyStats].sort((a, b) => mul * (a[tpSortKey] - b[tpSortKey]));
-  }, [strategyStats, tpSortKey, tpSortDir, refreshKey]);
-
-  const refetchDashboard = () => {
-    setRefreshKey((k) => k + 1);
-    const aid = selectedAccountId ?? undefined;
-    api.getDashboard(aid).then((d) => useDashboardStore.getState().setData(d)).catch(() => {});
-  };
+  }, [strategyStats, tpSortKey, tpSortDir]);
 
   const leverageColor = data.leverage_multiplier > 5 ? 'text-red-400' : data.leverage_multiplier > 2 ? 'text-yellow-400' : 'text-green-400';
 
@@ -178,13 +115,10 @@ export default function DashboardPage() {
                         onClick={() => toggleSort('tp_today')}
                       />
                       <th className="pb-2">止损</th>
-                      <th className="pb-2 text-center w-20">运行</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedStats.map((s) => {
-                      const isRunning = s.status === 'running';
-                      return (
+                    {sortedStats.map((s) => (
                         <tr key={s.strategy_id} className="border-t border-gray-800">
                           <td className="py-2 font-mono">{s.symbol}</td>
                           <td className={s.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
@@ -217,16 +151,8 @@ export default function DashboardPage() {
                               </span>
                             )}
                           </td>
-                          <td className="py-2 text-center">
-                            <StrategyToggle
-                              strategyId={s.strategy_id}
-                              running={isRunning}
-                              onDone={refetchDashboard}
-                            />
-                          </td>
                         </tr>
-                      );
-                    })}
+                    ))}
                   </tbody>
                 </table>
               </div>
