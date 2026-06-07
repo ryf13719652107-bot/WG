@@ -566,7 +566,9 @@ class GridExecutor:
         else:
             strategy_log_service.warning(strategy.id, f"止盈数量超限({total_qty:.2f}),跳过挂单,请手动止盈")
 
-        await self._cancel_sl_orders(session, strategy, symbol, exchange, context=context)
+        await self._cancel_sl_orders(
+            session, strategy, symbol, exchange, positions=positions, context=context,
+        )
         if self._exchange_sl_allowed(strategy, positions):
             await self._compute_and_place_stop_loss(
                 strategy=strategy,
@@ -1310,6 +1312,94 @@ class GridExecutor:
                 f"{log_label}失败: {e}（请检查持仓与保证金；下一周期或加仓更新时会再尝试挂止损）",
             )
 
+    async def _recover_unbooked_sl_trades(
+        self,
+        session,
+        strategy,
+        symbol: str,
+        exchange,
+        current_price: float,
+    ) -> bool:
+        """无开仓记录但交易所已空仓：补记近期已平本地腿、尚未写入 stop_loss 的交易。"""
+        from datetime import timedelta
+        from sqlalchemy import select
+
+        cutoff = now_beijing() - timedelta(minutes=15)
+        r = await session.execute(
+            select(Position).where(
+                Position.strategy_id == strategy.id,
+                Position.symbol == symbol,
+                Position.closed_at.isnot(None),
+                Position.closed_at >= cutoff,
+            ).order_by(Position.closed_at.desc())
+        )
+        closed_legs = list(r.scalars().all())
+        if not closed_legs:
+            return False
+
+        by_close: dict = {}
+        for p in closed_legs:
+            ts = p.closed_at
+            by_close.setdefault(ts, []).append(p)
+
+        for closed_at, legs in by_close.items():
+            booked = await session.execute(
+                select(Trade.id).where(
+                    Trade.strategy_id == strategy.id,
+                    Trade.close_reason == "stop_loss",
+                    Trade.exit_time == closed_at,
+                ).limit(1)
+            )
+            if booked.scalar_one_or_none():
+                continue
+
+            sl_exit = float(current_price)
+            strategy_log_service.warning(
+                strategy.id,
+                f"止损补记: {symbol} 检测到 {len(legs)} 笔本地持仓已平但未写入止损交易，正在补记",
+            )
+            for pos in legs:
+                exit_price = sl_exit
+                ep = float(pos.entry_price)
+                pq = float(pos.quantity)
+                if pos.side == "long":
+                    pnl = float(Decimal(str(exit_price)) - Decimal(str(ep))) * pq
+                    pct = float((Decimal(str(exit_price)) - Decimal(str(ep))) / Decimal(str(ep)) * 100) if ep > 0 else 0
+                else:
+                    pnl = float(Decimal(str(ep)) - Decimal(str(exit_price))) * pq
+                    pct = float((Decimal(str(ep)) - Decimal(str(exit_price))) / Decimal(str(ep)) * 100) if ep > 0 else 0
+                await db_add(
+                    session,
+                    Trade(
+                        strategy_id=strategy.id,
+                        account_id=strategy.account_id,
+                        symbol=pos.symbol,
+                        side=pos.side,
+                        quantity=pq,
+                        entry_price=ep,
+                        exit_price=exit_price,
+                        realized_pnl=round(pnl, 8),
+                        pnl_pct=round(pct, 8),
+                        entry_time=pos.opened_at or closed_at,
+                        exit_time=closed_at,
+                        layer=pos.layer,
+                        grid_level=pos.grid_level,
+                        close_reason="stop_loss",
+                    ),
+                )
+            await db_commit(session, strategy=strategy)
+            try:
+                await self._purge_exchange_open_orders(
+                    exchange, symbol, strategy.id, strategy.direction,
+                )
+            except Exception as e:
+                logger.warning("purge after SL recover strategy=%d: %s", strategy.id, e)
+            reopened = await self._open_initial(session, strategy, symbol, exchange, current_price)
+            if reopened:
+                strategy_log_service.success(strategy.id, f"止损补记后已重开首单: {symbol}")
+            return True
+        return False
+
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
     ) -> None:
@@ -1333,6 +1423,15 @@ class GridExecutor:
             await order_tracker.check_all_pending(exchange, strategy.id)
 
         if not open_positions:
+            loss_u = float(getattr(strategy, "cumulative_loss_threshold_u", 0) or 0)
+            if loss_u > 0:
+                ex_qty = await self._exchange_leg_contracts(exchange, symbol, strategy.direction)
+                if ex_qty >= 0 and ex_qty <= 1e-12:
+                    recovered = await self._recover_unbooked_sl_trades(
+                        session, strategy, symbol, exchange, current_price,
+                    )
+                    if recovered:
+                        return
             try:
                 purged = await self._purge_exchange_open_orders(
                     exchange, symbol, strategy.id, strategy.direction,
@@ -2147,30 +2246,53 @@ class GridExecutor:
             strategy_log_service.info(strategy.id, f"{symbol} {prefix}无待撤限价止盈单")
 
     async def _cancel_sl_orders(
-        self, session, strategy, symbol, exchange, *, context: str = "",
+        self,
+        session,
+        strategy,
+        symbol,
+        exchange,
+        *,
+        positions: list | None = None,
+        context: str = "",
     ):
         ctx = (context or "").strip()
         prefix = f"「{ctx}」 " if ctx else ""
-        sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
-        matched_sl = [
-            o for o in sl_orders
-            if GridExecutor._order_symbol_matches(o.symbol, symbol)
-        ]
         canceled_ids: list[str] = []
-        if not matched_sl:
-            logger.debug(
-                "cancel_sl_orders: no pending stop_loss for sym=%s strategy=%s ctx=%s",
-                symbol,
-                strategy.id,
-                ctx,
-            )
-            return
-
         failed = 0
-        for o in matched_sl:
-            oid = o.order_id
+        seen: set[str] = set()
+
+        for p in positions or []:
+            if not GridExecutor._order_symbol_matches(p.symbol or symbol, symbol):
+                continue
+            oid = (getattr(p, "sl_algo_order_id", None) or "").strip()
+            if not oid or oid in seen:
+                continue
+            seen.add(oid)
+            sym = p.symbol or symbol
             try:
-                await exchange.cancel_algo_order(oid, symbol)
+                await exchange.cancel_algo_order(oid, sym)
+                canceled_ids.append(oid)
+                order_tracker.discard_order(oid)
+                p.sl_algo_order_id = None
+            except Exception as e:
+                failed += 1
+                logger.warning("Cancel SL from DB id %s failed strategy=%d: %s", oid, strategy.id, e)
+                strategy_log_service.warning(
+                    strategy.id,
+                    f"{symbol} {prefix}撤止损条件单失败 Id={GridExecutor._short_order_id(oid)}: {e}",
+                )
+
+        sl_orders = order_tracker.get_pending_by_purpose(strategy.id, "stop_loss")
+        for o in sl_orders:
+            if not GridExecutor._order_symbol_matches(o.symbol, symbol):
+                continue
+            oid = o.order_id
+            if oid in seen:
+                continue
+            seen.add(oid)
+            sym_o = o.symbol or symbol
+            try:
+                await exchange.cancel_algo_order(oid, sym_o)
                 order_tracker.discard_order(oid)
                 canceled_ids.append(oid)
                 logger.info("Cancelled SL order %s for strategy %d", oid, strategy.id)
@@ -2179,19 +2301,25 @@ class GridExecutor:
                 logger.warning("Cancel SL order %s failed strategy=%d: %s", oid, strategy.id, e)
                 strategy_log_service.warning(
                     strategy.id,
-                    f"{symbol} {prefix}撤止损条件单失败 Id={GridExecutor._short_order_id(oid)}: {e}",
+                    f"{symbol} {prefix}撤止损条件单(track)失败 Id={GridExecutor._short_order_id(oid)}: {e}",
                 )
+
         if canceled_ids:
             prev = ",".join(GridExecutor._short_order_id(x) for x in canceled_ids[:8])
             strategy_log_service.info(
                 strategy.id,
                 f"{symbol} {prefix}撤止损条件单完成: 成功 {len(canceled_ids)} 笔 [{prev}]",
             )
-        elif matched_sl and failed > 0:
+        elif seen and failed > 0:
             strategy_log_service.warning(
                 strategy.id,
                 f"{symbol} {prefix}撤止损条件单: 本轮无成功撤销，请核对交易所 algo 挂单",
-                )
+            )
+        elif not seen and ctx:
+            logger.debug(
+                "cancel_sl_orders: no stop_loss for sym=%s strategy=%s ctx=%s",
+                symbol, strategy.id, ctx,
+            )
 
     async def _cancel_pending_grid_add_orders(self, strategy, symbol: str, exchange, *, context: str = "") -> None:
         ctx = (context or "").strip()
@@ -2251,7 +2379,7 @@ class GridExecutor:
             session, strategy, symbol, exchange, positions, context="止损全平前",
         )
         await self._cancel_sl_orders(
-            session, strategy, symbol, exchange, context="止损全平前",
+            session, strategy, symbol, exchange, positions=positions, context="止损全平前",
         )
         await self._cancel_pending_grid_add_orders(
             strategy, symbol, exchange, context="止损全平前",

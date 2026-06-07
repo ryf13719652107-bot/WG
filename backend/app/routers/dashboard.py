@@ -281,31 +281,41 @@ async def get_dashboard(
         tp_total = 0
         tp_today = 0
         sl_events: list[SlEventItem] = []
-        if s.started_at:
+        stats_since = s.started_at or s.created_at
+        if stats_since:
             tp_stmt = select(func.count(Trade.exit_time.distinct())).where(
                 Trade.strategy_id == s.id,
                 Trade.close_reason == "take_profit",
-                Trade.exit_time >= s.started_at,
+                Trade.exit_time >= stats_since,
             )
             tp_total = (await db.execute(tp_stmt)).scalar() or 0
             tp_stmt_today = select(func.count(Trade.exit_time.distinct())).where(
                 Trade.strategy_id == s.id,
                 Trade.close_reason == "take_profit",
-                Trade.exit_time >= s.started_at,
+                Trade.exit_time >= stats_since,
                 Trade.exit_time >= today_start,
             )
             tp_today = (await db.execute(tp_stmt_today)).scalar() or 0
-            sl_stmt = select(Trade).where(
-                Trade.strategy_id == s.id,
-                Trade.close_reason == "stop_loss",
-                Trade.exit_time >= s.started_at,
-            ).order_by(Trade.exit_time.desc()).limit(5)
-            sl_rows = (await db.execute(sl_stmt)).scalars().all()
-            for t in sl_rows:
+            sl_stmt = (
+                select(
+                    Trade.exit_time,
+                    func.max(Trade.exit_price).label("exit_price"),
+                    func.coalesce(func.sum(Trade.quantity), 0.0).label("quantity"),
+                )
+                .where(
+                    Trade.strategy_id == s.id,
+                    Trade.close_reason == "stop_loss",
+                    Trade.exit_time >= stats_since,
+                )
+                .group_by(Trade.exit_time)
+                .order_by(Trade.exit_time.desc())
+                .limit(5)
+            )
+            for row in (await db.execute(sl_stmt)).all():
                 sl_events.append(SlEventItem(
-                    time=t.exit_time.strftime("%Y-%m-%d %H:%M:%S") if t.exit_time else "",
-                    exit_price=float(t.exit_price) if t.exit_price else 0,
-                    quantity=float(t.quantity) if t.quantity else 0,
+                    time=row.exit_time.strftime("%Y-%m-%d %H:%M:%S") if row.exit_time else "",
+                    exit_price=float(row.exit_price or 0),
+                    quantity=float(row.quantity or 0),
                 ))
         strategy_stats.append(StrategyStatItem(
             strategy_id=s.id,

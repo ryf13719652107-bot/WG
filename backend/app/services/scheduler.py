@@ -206,10 +206,15 @@ class StrategyScheduler:
                 purpose = "grid_add"
                 side_hint = "buy" if p.side == "long" else "sell"
                 price_hint = float(p.grid_trigger_price or 0) or 0.0
+            elif (p.sl_algo_order_id or "").strip() == oid:
+                purpose = "stop_loss"
+                side_hint = "sell" if p.side == "long" else "buy"
+                price_hint = 0.0
             else:
                 continue
+            otype = "stop" if purpose == "stop_loss" else "limit"
             order_tracker.add(
-                oid, symbol, side_hint, "limit",
+                oid, symbol, side_hint, otype,
                 qty_hint, price_hint, strategy_id, purpose,
             )
             return order_tracker.get(oid)
@@ -260,8 +265,12 @@ class StrategyScheduler:
                         except (TypeError, ValueError):
                             pass
                     essentially_filled = amount_w > 1e-12 and filled_w >= amount_w * 0.998
+                    if isinstance(info, dict):
+                        algo_st = str(info.get("algoStatus") or "").lower()
+                        if algo_st in ("triggered", "finished", "filled", "effective"):
+                            ws_status = algo_st
                     is_filled = (
-                        ws_status in ("closed", "filled", "effective")
+                        ws_status in ("closed", "filled", "effective", "triggered", "finished")
                         or essentially_filled
                     )
                     is_canceled = ws_status in ("canceled", "cancelled") and not essentially_filled
