@@ -1,16 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import type { Account, FeishuNotifySettings, WebUiPasswordStatus } from '../../types';
-import { Key, Trash2, Plus, Shield, AlertCircle, MessageSquare, Lock, Wallet, Clock } from 'lucide-react';
-import type { TradingScheduleConfig } from '../../types';
-
-const FEISHU_DEFAULT: FeishuNotifySettings = {
-  webhook_masked: '',
-  webhook_source: 'none',
-  keyword_prefix: '[WG]',
-  has_database_webhook_override: false,
-  has_database_prefix_override: false,
-};
+import type { Account, WebUiPasswordStatus } from '../../types';
+import { Key, Trash2, Plus, Shield, AlertCircle, Lock, Wallet } from 'lucide-react';
 
 export default function SettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -19,14 +10,6 @@ export default function SettingsPage() {
   const [error, setError] = useState('');
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [feishu, setFeishu] = useState<FeishuNotifySettings>(FEISHU_DEFAULT);
-  const [feishuLoadFailed, setFeishuLoadFailed] = useState(false);
-  const [loadingFeishu, setLoadingFeishu] = useState(false);
-  const [webhookDraft, setWebhookDraft] = useState('');
-  const [keywordDraft, setKeywordDraft] = useState('');
-  const [keywordUseEnvDefault, setKeywordUseEnvDefault] = useState(false);
-  const [feishuSaveError, setFeishuSaveError] = useState('');
-  const [feishuSaving, setFeishuSaving] = useState(false);
 
   const [webUiPw, setWebUiPw] = useState<WebUiPasswordStatus | null>(null);
   const [loadingWebUi, setLoadingWebUi] = useState(false);
@@ -36,13 +19,6 @@ export default function SettingsPage() {
   const [equityDraft, setEquityDraft] = useState<Record<number, string>>({});
   const [equitySaving, setEquitySaving] = useState<number | null>(null);
   const [equityErr, setEquityErr] = useState('');
-
-  const [schedule, setSchedule] = useState<TradingScheduleConfig | null>(null);
-  const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [scheduleStart, setScheduleStart] = useState('06:00');
-  const [scheduleEnd, setScheduleEnd] = useState('21:00');
-  const [scheduleSaving, setScheduleSaving] = useState(false);
-  const [scheduleErr, setScheduleErr] = useState('');
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
@@ -63,59 +39,6 @@ export default function SettingsPage() {
     setLoadingAccounts(false);
   };
 
-  const loadFeishu = async () => {
-    setFeishuLoadFailed(false);
-    setLoadingFeishu(true);
-    try {
-      const fd = await api.getFeishuNotify();
-      setFeishu(fd);
-      setKeywordDraft(fd.keyword_prefix);
-      setKeywordUseEnvDefault(!fd.has_database_prefix_override);
-    } catch {
-      setFeishu(FEISHU_DEFAULT);
-      setKeywordDraft(FEISHU_DEFAULT.keyword_prefix);
-      setKeywordUseEnvDefault(true);
-      setFeishuLoadFailed(true);
-    }
-    setWebhookDraft('');
-    setFeishuSaveError('');
-    setLoadingFeishu(false);
-  };
-
-  const loadSchedule = async () => {
-    try {
-      const s = await api.getTradingSchedule();
-      setSchedule(s);
-      setScheduleEnabled(s.enabled);
-      setScheduleStart(s.start_hm);
-      setScheduleEnd(s.end_hm);
-      setScheduleErr('');
-    } catch (e: unknown) {
-      setScheduleErr(e instanceof Error ? e.message : '加载失败');
-    }
-  };
-
-  const normalizeTime = (v: string) => (v.length >= 5 ? v.slice(0, 5) : v);
-
-  const handleSaveSchedule = async () => {
-    setScheduleSaving(true);
-    setScheduleErr('');
-    try {
-      const s = await api.updateTradingSchedule({
-        enabled: scheduleEnabled,
-        start_hm: normalizeTime(scheduleStart),
-        end_hm: normalizeTime(scheduleEnd),
-      });
-      setSchedule(s);
-      setScheduleEnabled(s.enabled);
-      setScheduleStart(s.start_hm);
-      setScheduleEnd(s.end_hm);
-    } catch (e: unknown) {
-      setScheduleErr(e instanceof Error ? e.message : '保存失败');
-    }
-    setScheduleSaving(false);
-  };
-
   const loadWebUi = async () => {
     setLoadingWebUi(true);
     try {
@@ -129,7 +52,7 @@ export default function SettingsPage() {
   };
 
   const load = async () => {
-    await Promise.all([loadAccounts(), loadFeishu(), loadWebUi(), loadSchedule()]);
+    await Promise.all([loadAccounts(), loadWebUi()]);
   };
 
   useEffect(() => {
@@ -195,55 +118,6 @@ export default function SettingsPage() {
     } catch (e: any) {
       setError(`删除失败: ${e.message}`);
     }
-  };
-
-  const handleSaveFeishu = async () => {
-    setFeishuSaving(true);
-    setFeishuSaveError('');
-    try {
-      const body: Parameters<typeof api.updateFeishuNotify>[0] = {};
-      if (webhookDraft.trim()) body.webhook_url = webhookDraft.trim();
-      if (keywordUseEnvDefault) body.keyword_prefix_use_env_default = true;
-      else body.keyword_prefix = keywordDraft;
-      const updated = await api.updateFeishuNotify(body);
-      setFeishu(updated);
-      setKeywordDraft(updated.keyword_prefix);
-      setKeywordUseEnvDefault(!updated.has_database_prefix_override);
-      setWebhookDraft('');
-      setFeishuLoadFailed(false);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setFeishuSaveError(`保存失败: ${msg}`);
-    }
-    setFeishuSaving(false);
-  };
-
-  const handleDeleteFeishuWebhook = async () => {
-    if (!feishu.has_database_webhook_override) {
-      setFeishuSaveError(
-        '数据库里没有保存过 Webhook（当前可能仅用环境变量 FEISHU_WEBHOOK_URL）。无需点此删除；若要停用请改部署环境。',
-      );
-      return;
-    }
-    if (
-      !confirm(
-        '确定删除数据库中保存的飞书 Webhook？\n若服务器仍配置了环境变量 FEISHU_WEBHOOK_URL，推送会继续使用该地址。',
-      )
-    ) {
-      return;
-    }
-    setFeishuSaving(true);
-    setFeishuSaveError('');
-    try {
-      const updated = await api.updateFeishuNotify({ webhook_url: '' });
-      setFeishu(updated);
-      setWebhookDraft('');
-      setFeishuLoadFailed(false);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setFeishuSaveError(`删除失败: ${msg}`);
-    }
-    setFeishuSaving(false);
   };
 
   const handleSaveWebUiPassword = async () => {
@@ -315,162 +189,6 @@ export default function SettingsPage() {
               className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded text-sm mr-2"
             >
               {webUiSaving ? '保存中…' : '保存密码'}
-            </button>
-          </div>
-        )}
-      </section>
-
-      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
-          <Clock size={16} className="text-cyan-400" />
-          交易时段控制（北京时间）
-        </h3>
-        {scheduleErr && (
-          <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 rounded px-2 py-1.5 mb-3">
-            <AlertCircle size={14} /> {scheduleErr}
-          </div>
-        )}
-        <p className="text-xs text-gray-500 leading-relaxed mb-3">
-          开启后：到<strong className="text-gray-400">收市时间</strong>自动停止全部运行中策略并<strong className="text-gray-400">市价全平</strong>；
-          到<strong className="text-gray-400">开盘时间</strong>自动恢复上一交易日被时段停止的策略（手动停止的不恢复）。
-          盘外可在仪表盘关闭策略，但无法新开策略。
-        </p>
-        <label className="flex items-center gap-2 text-sm text-gray-300 mb-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={scheduleEnabled}
-            onChange={(e) => setScheduleEnabled(e.target.checked)}
-            className="rounded border-gray-600"
-          />
-          启用每日交易时段
-          {schedule && (
-            <span className={`text-xs ${schedule.within_window ? 'text-green-400' : 'text-amber-400'}`}>
-              （当前{schedule.within_window ? '盘内' : '盘外'}）
-            </span>
-          )}
-        </label>
-        <div className="flex flex-wrap items-center gap-3 mb-3">
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">开盘</label>
-            <input
-              type="time"
-              value={scheduleStart}
-              onChange={(e) => setScheduleStart(e.target.value)}
-              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">收市（到点全平+停策略）</label>
-            <input
-              type="time"
-              value={scheduleEnd}
-              onChange={(e) => setScheduleEnd(e.target.value)}
-              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm"
-            />
-          </div>
-        </div>
-        <button
-          type="button"
-          disabled={scheduleSaving}
-          onClick={() => void handleSaveSchedule()}
-          className="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 rounded text-sm"
-        >
-          {scheduleSaving ? '保存中…' : '保存时段设置'}
-        </button>
-      </section>
-
-      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
-          <MessageSquare size={16} className="text-teal-400" />
-          飞书
-        </h3>
-
-        {loadingFeishu ? (
-          <p className="text-gray-500 text-sm">加载中…</p>
-        ) : (
-          <div className="space-y-3 text-sm">
-            {feishuSaveError && (
-              <div className="flex items-center gap-2 text-red-400 text-xs bg-red-900/20 rounded px-2 py-1.5">
-                <AlertCircle size={14} /> {feishuSaveError}
-              </div>
-            )}
-            {feishuLoadFailed && (
-              <p className="text-xs text-amber-500/80">未加载到配置，仍可填写后保存</p>
-            )}
-
-            <p className="text-xs text-gray-500 leading-relaxed">
-              当前生效链接（脱敏）：{' '}
-              <span className="text-gray-300 font-mono break-all">
-                {feishu.webhook_masked?.trim() ? feishu.webhook_masked : '（无）'}
-              </span>
-              <span className="text-gray-600"> · </span>
-              来源：
-              {feishu.webhook_source === 'database'
-                ? '数据库'
-                : feishu.webhook_source === 'environment'
-                  ? '环境变量'
-                  : '未配置'}
-            </p>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">填写或更新 Webhook</label>
-              <input
-                type="text"
-                inputMode="url"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"
-                value={webhookDraft}
-                onChange={(e) => setWebhookDraft(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm font-mono"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={feishuSaving || !feishu.has_database_webhook_override}
-                title={
-                  feishu.has_database_webhook_override
-                    ? '清除数据库中保存的 Webhook'
-                    : '仅在数据库中保存过链接时可删除（环境变量请在部署侧修改）'
-                }
-                onClick={() => void handleDeleteFeishuWebhook()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-red-500/50 text-red-300 hover:bg-red-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Trash2 size={14} />
-                删除已保存链接
-              </button>
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">关键词前缀</label>
-              <input
-                type="text"
-                placeholder="[WG]"
-                value={keywordDraft}
-                onChange={(e) => setKeywordDraft(e.target.value)}
-                disabled={keywordUseEnvDefault}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm disabled:opacity-45"
-              />
-            </div>
-
-            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={keywordUseEnvDefault}
-                onChange={(e) => setKeywordUseEnvDefault(e.target.checked)}
-              />
-              关键词用环境变量
-            </label>
-
-            <button
-              type="button"
-              disabled={feishuSaving}
-              onClick={handleSaveFeishu}
-              className="px-4 py-2 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 rounded text-sm"
-            >
-              {feishuSaving ? '保存中…' : '保存'}
             </button>
           </div>
         )}

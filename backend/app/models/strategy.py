@@ -31,14 +31,10 @@ class Strategy(Base):
     grid_interval_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # drop interval multiplier
     position_multiplier: Mapped[float] = mapped_column(Float, default=1.5)  # position size multiplier per layer
     cumulative_loss_threshold_u: Mapped[float] = mapped_column(Float, default=0.0)  # 条件止损名义亏损额 U；0=不挂止损单
-    stop_loss_close_pct: Mapped[float] = mapped_column(Float, default=100.0)  # 触发止损时平仓当前持仓比例%；0=不挂止损单
-    reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # 仅止盈全平后是否自动重开首单；止损路径不自动重开
+    reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # 止盈全平后是否自动重开首单
 
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'
-    stopped_by_schedule: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # 仪表盘「运行」开关：True=参与全局 06:00–21:00 时段；False=不受时段约束、正常连续运行
-    schedule_participate: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_beijing)

@@ -135,9 +135,12 @@ class OrderTracker:
         except (TypeError, ValueError):
             rem = None
 
-        if status_str in ("closed", "filled", "effective"):
+        if status_str in ("closed", "filled", "effective", "triggered", "finished"):
             return True
         if isinstance(info, dict):
+            algo_st = str(info.get("algoStatus") or "").lower()
+            if algo_st in ("triggered", "finished", "filled", "effective"):
+                return True
             if str(info.get("state", "")).lower() in ("filled", "effective"):
                 return True
             fs = str(info.get("fillState") or "").lower()
@@ -186,14 +189,21 @@ class OrderTracker:
         if not co:
             return None
         sym = (co.symbol or symbol or "").strip() or symbol
-        try:
-            raw = await exchange.fetch_order(order_id, sym)
-        except Exception as e:
-            if co.purpose == "tp":
-                logger.warning("fetch_order tp %s failed (symbol=%s): %s", order_id, sym, e)
-            else:
-                logger.debug("fetch_order %s failed: %s", order_id, e)
-            return co
+        raw = None
+        if co.purpose == "stop_loss":
+            try:
+                raw = await exchange.fetch_algo_order(order_id, sym)
+            except Exception as e:
+                logger.debug("fetch_algo_order %s failed: %s", order_id, e)
+        if raw is None:
+            try:
+                raw = await exchange.fetch_order(order_id, sym)
+            except Exception as e:
+                if co.purpose == "tp":
+                    logger.warning("fetch_order tp %s failed (symbol=%s): %s", order_id, sym, e)
+                else:
+                    logger.debug("fetch_order %s failed: %s", order_id, e)
+                return co
         return self._apply_raw_to_co(co, raw)
 
     async def check_all_pending(self, exchange, strategy_id: int) -> dict[str, CachedOrder]:

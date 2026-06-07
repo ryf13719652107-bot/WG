@@ -28,8 +28,8 @@ class GridStrategyEngine:
       where interval_n = drop_base_pct * interval_multiplier^(n-1)
     - Position sizing: level_n = base_qty * position_multiplier^n
     - Stop loss: optional exchange algo order at a price derived from fixed USDT loss
-      (cumulative_loss_threshold_u). When triggered, closes stop_loss_close_pct % of position
-      quantity; 0% disables. After stop loss the strategy never auto-reopens (TP may still).
+      (cumulative_loss_threshold_u). When triggered, closes full position and auto-reopens
+      initial entry; threshold 0 disables exchange stop loss.
     """
 
     def __init__(self, strategy):
@@ -41,7 +41,6 @@ class GridStrategyEngine:
         self.pos_mult = float(strategy.position_multiplier)
         self.max_layers = int(strategy.max_layers)
         self.loss_threshold = float(strategy.cumulative_loss_threshold_u or 0)
-        self.sl_close_pct = float(getattr(strategy, "stop_loss_close_pct", 100) or 0)
 
     def calculate_grid_level_at(self, base_price: float, side: str, level: int) -> Optional[GridLevel]:
         """单层网格限价参数。``base_price`` 固定为首仓成交价（不因加仓成交而漂移）。"""

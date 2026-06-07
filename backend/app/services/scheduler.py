@@ -84,9 +84,7 @@ class StrategyScheduler:
                                 order_tracker.add(oid, s.symbol, side, otype, amount, price, s.id, purpose)
                     n_open = len(open_orders or [])
                     n_algo_sl = 0
-                    if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0 and float(
-                        getattr(s, "stop_loss_close_pct", 0) or 0
-                    ) > 0:
+                    if float(getattr(s, "cumulative_loss_threshold_u", 0) or 0) > 0:
                         try:
                             algo_rows = await exchange.fetch_open_algo_orders(s.symbol)
                         except Exception as e:
@@ -437,17 +435,6 @@ class StrategyScheduler:
                 coalesce=True,
                 max_instances=1,
             )
-        if not self._aps.get_job("trading_schedule"):
-            from .trading_schedule import trading_schedule_tick
-            self._aps.add_job(
-                trading_schedule_tick,
-                "interval",
-                seconds=60,
-                id="trading_schedule",
-                coalesce=True,
-                max_instances=1,
-            )
-
     def stop(self):
         self._running = False
         self._ws_disconnected.clear()
@@ -458,7 +445,7 @@ class StrategyScheduler:
             if not task.done():
                 task.cancel()
         self._order_watch_tasks.clear()
-        for job_id in ("position_sync", "account_equity_guard", "trading_schedule"):
+        for job_id in ("position_sync", "account_equity_guard"):
             if self._aps.get_job(job_id):
                 try:
                     self._aps.remove_job(job_id)
@@ -504,7 +491,6 @@ class StrategyScheduler:
             await price_stream.subscribe_exchange(ex_type, [strategy.symbol], pub_ex)
 
         strategy.status = "running"
-        strategy.stopped_by_schedule = False
         strategy.started_at = now_beijing()
         baseline = await record_baseline_on_strategy_start(
             strategy.account_id, session, strategy_id=strategy_id,
@@ -549,7 +535,7 @@ class StrategyScheduler:
         self._exchange_services.pop(strategy_id, None)
         self._strategy_locks.pop(strategy_id, None)
 
-    async def remove_strategy(self, strategy_id: int, *, cancel_exchange_orders: bool = True):
+    async def remove_strategy(self, strategy_id: int):
         await self.detach_strategy(strategy_id)
 
         async with async_session() as session:
@@ -560,7 +546,7 @@ class StrategyScheduler:
             symbol = strategy.symbol
             exchange = await get_exchange_service(strategy.account_id)
 
-            if exchange and cancel_exchange_orders:
+            if exchange:
                 try:
                     ex_id = getattr(exchange, "exchange_id", "") or ""
                     hedge = getattr(exchange, "hedge_mode", True)
@@ -596,16 +582,11 @@ class StrategyScheduler:
                 except Exception as e:
                     logger.warning("Strategy %d stop: failed to cancel orders: %s", strategy_id, e)
 
-                from .order_tracker import order_tracker
-                order_tracker.clear_strategy(strategy_id)
-                strategy.status = "stopped"
-                await session.commit()
-                logger.info("Strategy %d stopped", strategy_id)
-            else:
-                logger.info(
-                    "Strategy %d detached (orders/positions handled by schedule flatten)",
-                    strategy_id,
-                )
+            from .order_tracker import order_tracker
+            order_tracker.clear_strategy(strategy_id)
+            strategy.status = "stopped"
+            await session.commit()
+        logger.info("Strategy %d stopped", strategy_id)
 
     async def _get_exchange_for_strategy(self, strategy_id: int) -> Optional[BaseExchangeService]:
         if strategy_id in self._exchange_services:
@@ -653,15 +634,6 @@ class StrategyScheduler:
                 if await is_account_trading_halted(strategy.account_id, session):
                     if strategy.status == "running":
                         asyncio.create_task(self.remove_strategy(strategy_id))
-                    return
-
-                from .trading_schedule import get_trading_window_config, is_within_trading_window
-                tw_cfg = await get_trading_window_config()
-                if (
-                    tw_cfg.enabled
-                    and bool(getattr(strategy, "schedule_participate", False))
-                    and not is_within_trading_window(cfg=tw_cfg)
-                ):
                     return
 
                 symbol = strategy.symbol

@@ -12,6 +12,7 @@ export default function StrategyPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<'start' | 'stop' | 'panic' | null>(null);
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
 
   const load = async () => {
@@ -101,16 +102,85 @@ export default function StrategyPage() {
 
   const editingStrategy = editingId ? strategies.find(s => s.id === editingId) || null : null;
 
+  const handleBulkStart = async () => {
+    if (!confirm('确认一键启动当前账户下全部已停止的策略？')) return;
+    setBulkBusy('start');
+    try {
+      const r = await api.bulkStartStrategies(selectedAccountId ?? undefined);
+      alert(`启动完成：成功 ${r.started}，失败 ${r.failed}，跳过 ${r.skipped}${r.errors?.length ? '\n' + r.errors.join('\n') : ''}`);
+      load();
+    } catch (e: unknown) {
+      alert('一键启动失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+    setBulkBusy(null);
+  };
+
+  const handleBulkStop = async () => {
+    if (!confirm('确认一键停止当前账户下全部运行中的策略？')) return;
+    setBulkBusy('stop');
+    try {
+      const r = await api.bulkStopStrategies(selectedAccountId ?? undefined);
+      alert(`已停止 ${r.stopped} 个策略`);
+      load();
+    } catch (e: unknown) {
+      alert('一键停止失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+    setBulkBusy(null);
+  };
+
+  const handleBulkPanicClose = async () => {
+    if (!confirm('确认一键平仓？将停止并市价平掉当前账户下全部策略的持仓。')) return;
+    setBulkBusy('panic');
+    try {
+      const r = await api.bulkPanicClose(selectedAccountId ?? undefined);
+      alert(`平仓完成：成功 ${r.closed}，无持仓 ${r.no_position}，失败 ${r.failed}`);
+      load();
+    } catch (e: unknown) {
+      alert('一键平仓失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+    setBulkBusy(null);
+  };
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-bold">策略管理</h2>
         <button
           onClick={() => { setEditingId(null); setShowForm(true); }}
-          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors shrink-0"
         >
           <Plus size={16} />
           新建策略
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <button
+          type="button"
+          disabled={bulkBusy !== null}
+          onClick={() => void handleBulkStart()}
+          className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold transition-colors"
+        >
+          <Play size={18} />
+          {bulkBusy === 'start' ? '启动中…' : '一键启动全部'}
+        </button>
+        <button
+          type="button"
+          disabled={bulkBusy !== null}
+          onClick={() => void handleBulkStop()}
+          className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-sm font-semibold transition-colors"
+        >
+          <Square size={18} />
+          {bulkBusy === 'stop' ? '停止中…' : '一键停止全部'}
+        </button>
+        <button
+          type="button"
+          disabled={bulkBusy !== null}
+          onClick={() => void handleBulkPanicClose()}
+          className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-sm font-semibold transition-colors"
+        >
+          <AlertTriangle size={18} />
+          {bulkBusy === 'panic' ? '平仓中…' : '一键平仓全部'}
         </button>
       </div>
 

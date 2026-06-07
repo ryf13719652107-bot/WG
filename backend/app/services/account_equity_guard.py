@@ -11,7 +11,6 @@ from ..database import async_session
 from ..models.account import Account
 from ..models.strategy import Strategy
 from .exchange_factory import get_exchange_service
-from .feishu_notify import notify_trade_event
 
 logger = logging.getLogger(__name__)
 
@@ -175,21 +174,6 @@ async def halt_account_trading(
         if baseline_u and baseline_u > 0:
             msg += f" 启动时基准权益≈{baseline_u:.4f} USDT。"
         logger.warning("Account %d equity stop triggered: %s", account_id, msg)
-
-        try:
-            await notify_trade_event(
-                strategy_id=0,
-                account_id=account_id,
-                symbol="—",
-                direction="—",
-                title="账户总资产止损触发",
-                body_lines=[
-                    msg,
-                    "已对本账户各策略撤单并尝试市价全平；请在系统设置中调整下限或重置后，再手动启动策略。",
-                ],
-            )
-        except Exception as e:
-            logger.debug("Feishu equity stop notify: %s", e)
 
         return len(strategies)
 

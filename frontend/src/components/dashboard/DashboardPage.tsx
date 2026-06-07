@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useDashboardStore } from '../../store/dashboardStore';
 import { api } from '../../services/api';
-import { TrendingDown, Layers, Activity, Wallet, PiggyBank, Gauge, TrendingUp, AlertTriangle, ArrowUpDown, Clock } from 'lucide-react';
+import { TrendingDown, Layers, Activity, Wallet, PiggyBank, Gauge, TrendingUp, AlertTriangle, ArrowUpDown } from 'lucide-react';
 
 type TpSortKey = 'tp_total' | 'tp_today';
 type SortDir = 'asc' | 'desc';
@@ -32,19 +32,15 @@ function SortableTh({
   );
 }
 
-function ScheduleParticipateToggle({
+function StrategyToggle({
   strategyId,
-  participate,
-  twEnabled,
-  startHm,
-  endHm,
+  running,
+  disabled,
   onDone,
 }: {
   strategyId: number;
-  participate: boolean;
-  twEnabled: boolean;
-  startHm: string;
-  endHm: string;
+  running: boolean;
+  disabled?: boolean;
   onDone: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -54,7 +50,11 @@ function ScheduleParticipateToggle({
     setBusy(true);
     setErr('');
     try {
-      await api.setScheduleParticipate(strategyId, !participate);
+      if (running) {
+        await api.stopStrategy(strategyId);
+      } else {
+        await api.startStrategy(strategyId);
+      }
       onDone();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : '操作失败');
@@ -63,27 +63,22 @@ function ScheduleParticipateToggle({
     }
   };
 
-  const titleOn = twEnabled
-    ? `按时间运行：每日 ${startHm}–${endHm} 自动交易，${endHm} 收市全平，${startHm} 自动恢复`
-    : '已选择按时间运行（请先在系统设置启用「每日交易时段」）';
-  const titleOff = '24 小时交易：不受交易时段限制，21:00 不会收市';
-
   return (
     <div className="flex flex-col items-center gap-0.5">
       <button
         type="button"
         role="switch"
-        aria-checked={participate}
-        disabled={busy}
+        aria-checked={running}
+        disabled={disabled || busy}
         onClick={toggle}
-        title={participate ? titleOn : titleOff}
+        title={running ? '点击停止策略' : '点击启动策略'}
         className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-          participate ? 'bg-green-600' : 'bg-gray-700'
-        } ${busy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+          running ? 'bg-green-600' : 'bg-gray-700'
+        } ${disabled || busy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
       >
         <span
           className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            participate ? 'translate-x-5' : ''
+            running ? 'translate-x-5' : ''
           }`}
         />
       </button>
@@ -96,7 +91,6 @@ export default function DashboardPage() {
   const { data, selectedAccountId } = useDashboardStore();
   const strategyStats = data.strategy_stats || [];
   const specialRestarts = data.special_sl_restarts || [];
-  const tw = data.trading_window;
 
   const [tpSortKey, setTpSortKey] = useState<TpSortKey>('tp_total');
   const [tpSortDir, setTpSortDir] = useState<SortDir>('desc');
@@ -123,8 +117,6 @@ export default function DashboardPage() {
   };
 
   const leverageColor = data.leverage_multiplier > 5 ? 'text-red-400' : data.leverage_multiplier > 2 ? 'text-yellow-400' : 'text-green-400';
-  const twStart = tw?.start_hm ?? '06:00';
-  const twEnd = tw?.end_hm ?? '21:00';
 
   const mainStats = [
     { label: '钱包余额', value: `${data.total_balance.toFixed(2)} USDT`, icon: Wallet, color: 'text-blue-400' },
@@ -143,27 +135,6 @@ export default function DashboardPage() {
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-bold">仪表盘</h2>
-
-      {tw?.enabled && (
-        <div
-          className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg border ${
-            tw.within_window
-              ? 'bg-green-900/20 border-green-800/50 text-green-300'
-              : 'bg-amber-900/20 border-amber-800/50 text-amber-200'
-          }`}
-        >
-          <Clock size={14} />
-          {tw.within_window ? (
-            <span>
-              交易时段内（北京时间 {tw.start_hm}–{tw.end_hm}）：「运行」开关已开的策略按时段自动交易
-            </span>
-          ) : (
-            <span>
-              盘外时段：「运行」开关已开的策略已收市；{tw.start_hm} 自动恢复。开关关闭的策略为 24 小时交易，不受收市影响
-            </span>
-          )}
-        </div>
-      )}
 
       <div className="flex flex-col xl:flex-row gap-4 items-start">
         <div className="flex-1 min-w-0 space-y-4 w-full">
@@ -207,14 +178,12 @@ export default function DashboardPage() {
                         onClick={() => toggleSort('tp_today')}
                       />
                       <th className="pb-2">止损</th>
-                      <th className="pb-2 text-center w-20" title="开=按系统设置时间运行；关=24小时交易">
-                        运行
-                      </th>
+                      <th className="pb-2 text-center w-20">运行</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sortedStats.map((s) => {
-                      const participate = Boolean(s.schedule_participate);
+                      const isRunning = s.status === 'running';
                       return (
                         <tr key={s.strategy_id} className="border-t border-gray-800">
                           <td className="py-2 font-mono">{s.symbol}</td>
@@ -249,12 +218,9 @@ export default function DashboardPage() {
                             )}
                           </td>
                           <td className="py-2 text-center">
-                            <ScheduleParticipateToggle
+                            <StrategyToggle
                               strategyId={s.strategy_id}
-                              participate={participate}
-                              twEnabled={Boolean(tw?.enabled)}
-                              startHm={twStart}
-                              endHm={twEnd}
+                              running={isRunning}
                               onDone={refetchDashboard}
                             />
                           </td>
@@ -291,10 +257,10 @@ export default function DashboardPage() {
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div className="flex items-center gap-2 text-amber-400/90 text-sm font-semibold mb-2 border-b border-gray-800 pb-2">
               <AlertTriangle size={16} />
-              止损减仓过小 · 全平重启
+              止损全平重启（历史）
             </div>
             <p className="text-xs text-gray-500 mb-3">
-              加仓层数≥3 后触发止损，若减仓量低于交易所最小下单量，系统会全平并按策略配置重开。
+              交易所止损触发后全部平仓并自动重开首单；下方为旧版「减仓过小全平」历史记录。
             </p>
             {specialRestarts.length === 0 ? (
               <div className="text-gray-600 text-sm py-6 text-center">暂无记录</div>

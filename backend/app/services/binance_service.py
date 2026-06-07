@@ -380,6 +380,38 @@ class BinanceService(BaseExchangeService):
             ),
         )
 
+    async def fetch_algo_order(self, algo_id: str, symbol: str) -> dict:
+        """Query a single USD-M conditional (algo) order."""
+        formatted = self._format_symbol(symbol)
+        sym_rest = formatted.replace("/", "").replace(":USDT", "")
+        raw = await retry_with_backoff(
+            "binance.algoOrder(get)",
+            lambda: self.exchange.request(
+                _FAPI_ALGO_ORDER_PATH,
+                "fapiPrivate",
+                "GET",
+                {"algoId": algo_id, "symbol": sym_rest},
+            ),
+        )
+        if not isinstance(raw, dict):
+            return {"id": algo_id, "algoId": algo_id, "status": "unknown", "info": raw}
+        status = str(raw.get("algoStatus") or raw.get("status") or "").lower()
+        qty = float(raw.get("quantity") or raw.get("origQty") or raw.get("qty") or 0)
+        trig = float(raw.get("triggerPrice") or raw.get("stopPrice") or 0)
+        avg = float(raw.get("avgPrice") or raw.get("actualPrice") or 0)
+        return {
+            "id": str(raw.get("algoId") or algo_id),
+            "algoId": str(raw.get("algoId") or algo_id),
+            "symbol": formatted,
+            "side": str(raw.get("side") or "").lower(),
+            "type": str(raw.get("orderType") or raw.get("type") or "stop_market").lower(),
+            "amount": qty,
+            "price": avg if avg > 0 else trig,
+            "filled": qty if status in ("triggered", "finished", "filled", "effective") else 0.0,
+            "status": status,
+            "info": raw,
+        }
+
     async def fetch_open_algo_orders(self, symbol: str) -> list:
         """List open USD-M conditional (algo) orders for this symbol."""
         formatted = self._format_symbol(symbol)

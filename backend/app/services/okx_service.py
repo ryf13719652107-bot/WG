@@ -144,6 +144,36 @@ class OkxService(BaseExchangeService):
             lambda: self.exchange.fetch_open_orders(fmt),
         )
 
+    async def fetch_open_algo_orders(self, symbol: str) -> list:
+        """OKX 条件单（含止损）在 open orders 的 stop 通道。"""
+        formatted = self._format_symbol(symbol)
+        try:
+            rows = await retry_with_backoff(
+                "okx.fetch_open_orders(stop)",
+                lambda: self.exchange.fetch_open_orders(formatted, params={"stop": True}),
+            )
+            return rows or []
+        except Exception as e:
+            logger.debug("OKX fetch_open_algo_orders %s: %s", symbol, e)
+            return []
+
+    async def fetch_algo_order(self, algo_id: str, symbol: str) -> dict:
+        formatted = self._format_symbol(symbol)
+        try:
+            return await retry_with_backoff(
+                "okx.fetch_algo_order",
+                lambda: self.exchange.fetch_order(
+                    algo_id, formatted, params={"algoId": algo_id},
+                ),
+            )
+        except Exception:
+            return await retry_with_backoff(
+                "okx.fetch_algo_order(stop)",
+                lambda: self.exchange.fetch_order(
+                    algo_id, formatted, params={"stop": True, "algoId": algo_id},
+                ),
+            )
+
     async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict:
         return await retry_with_backoff(
             "okx.fetch_order_book",

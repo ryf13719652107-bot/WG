@@ -333,6 +333,10 @@ class BaseExchangeService(ABC):
         """Open conditional (algo) orders for this symbol. Default empty; Binance USD-M overrides."""
         return []
 
+    async def fetch_algo_order(self, algo_id: str, symbol: str) -> dict:
+        """Fetch a conditional/algo order by id. Default falls back to fetch_order."""
+        return await self.fetch_order(algo_id, symbol)
+
     # ---- WebSocket (Public) ----
 
     @abstractmethod

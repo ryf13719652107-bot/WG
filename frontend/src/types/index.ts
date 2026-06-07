@@ -4,14 +4,6 @@ export interface WebUiPasswordStatus {
   database_has_password: boolean;
 }
 
-export interface FeishuNotifySettings {
-  webhook_masked: string;
-  webhook_source: 'database' | 'environment' | 'none';
-  keyword_prefix: string;
-  has_database_webhook_override: boolean;
-  has_database_prefix_override: boolean;
-}
-
 export interface Account {
   id: number;
   name: string;
@@ -106,7 +98,6 @@ export interface DashboardData {
     symbol: string;
     direction: string;
     status: string;
-    schedule_participate?: boolean;
     tp_total: number;
     tp_today: number;
     sl_events: Array<{
@@ -124,17 +115,4 @@ export interface DashboardData {
     quantity: number;
     realized_pnl: number;
   }>;
-  trading_window?: {
-    enabled: boolean;
-    start_hm: string;
-    end_hm: string;
-    within_window: boolean;
-  };
-}
-
-export interface TradingScheduleConfig {
-  enabled: boolean;
-  start_hm: string;
-  end_hm: string;
-  within_window: boolean;
 }

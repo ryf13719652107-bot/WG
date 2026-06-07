@@ -23,17 +23,9 @@ class StrategyStatItem(BaseModel):
     symbol: str
     direction: str
     status: str
-    schedule_participate: bool = False
     tp_total: int = 0
     tp_today: int = 0
     sl_events: list[SlEventItem] = []
-
-
-class TradingWindowStatus(BaseModel):
-    enabled: bool = False
-    start_hm: str = "06:00"
-    end_hm: str = "21:00"
-    within_window: bool = True
 
 
 class DashboardSnapshot(BaseModel):
@@ -62,4 +54,3 @@ class DashboardSnapshot(BaseModel):
     exchange_positions: list[dict] = []
     strategy_stats: list[StrategyStatItem] = []
     special_sl_restarts: list[SpecialSlRestartItem] = []
-    trading_window: TradingWindowStatus = TradingWindowStatus()

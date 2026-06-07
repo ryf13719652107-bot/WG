@@ -3,11 +3,9 @@ import type {
   Position,
   Trade,
   DashboardData,
-  FeishuNotifySettings,
   WebUiPasswordStatus,
-  TradingScheduleConfig,
 } from '../types';
-import type { Strategy, StrategyFormData } from '../types/strategy';
+import type { Strategy, StrategyFormData, StrategyParamTemplate, StrategyParamFields } from '../types/strategy';
 
 const BASE = '/api';
 
@@ -67,6 +65,15 @@ export const api = {
     request<Account>(`/accounts/${id}/equity-guard/reset`, { method: 'POST' }),
 
   // Strategies
+  listParamTemplates: (): Promise<StrategyParamTemplate[]> =>
+    request<StrategyParamTemplate[]>('/strategies/param-templates'),
+  saveParamTemplate: (name: string, params: StrategyParamFields): Promise<StrategyParamTemplate> =>
+    request<StrategyParamTemplate>('/strategies/param-templates', {
+      method: 'POST',
+      body: JSON.stringify({ name, params }),
+    }),
+  deleteParamTemplate: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(`/strategies/param-templates/${id}`, { method: 'DELETE' }),
   createStrategy: (data: StrategyFormData): Promise<Strategy> =>
     request<Strategy>('/strategies', { method: 'POST', body: JSON.stringify(data) }),
   listStrategies: (status?: string, accountId?: number, symbol?: string): Promise<Strategy[]> => {
@@ -85,19 +92,15 @@ export const api = {
     request(`/strategies/${id}/start`, { method: 'POST' }),
   stopStrategy: (id: number): Promise<{ status: string }> =>
     request(`/strategies/${id}/stop`, { method: 'POST' }),
-  setScheduleParticipate: (
-    id: number,
-    participate: boolean,
-  ): Promise<{
-    ok: boolean;
-    strategy_id: number;
-    schedule_participate: boolean;
-    status: string;
-  }> =>
-    request(`/strategies/${id}/schedule-participate`, {
-      method: 'POST',
-      body: JSON.stringify({ participate }),
-    }),
+  bulkStartStrategies: (accountId?: number): Promise<{
+    started: number; failed: number; skipped: number; total: number; errors: string[];
+  }> => request(`/strategies/bulk/start${accountId != null ? `?account_id=${accountId}` : ''}`, { method: 'POST' }),
+  bulkStopStrategies: (accountId?: number): Promise<{ stopped: number; total: number }> =>
+    request(`/strategies/bulk/stop${accountId != null ? `?account_id=${accountId}` : ''}`, { method: 'POST' }),
+  bulkPanicClose: (accountId?: number): Promise<{
+    closed: number; failed: number; no_position: number; total: number;
+    results: Array<{ strategy_id: number; symbol: string; direction: string; status: string; error?: string }>;
+  }> => request(`/strategies/bulk/panic-close${accountId != null ? `?account_id=${accountId}` : ''}`, { method: 'POST' }),
   panicCloseStrategy: (id: number): Promise<{
     closed: number; failed: number;
     results: Array<{ symbol: string; side: string; status: string; exit_price?: number; error?: string }>;
@@ -172,25 +175,6 @@ export const api = {
   // Bot toggle
   toggleBot: (enabled: boolean): Promise<{ master_switch: boolean }> =>
     request('/bot/toggle', { method: 'POST', body: JSON.stringify({ enabled }) }),
-
-  getTradingSchedule: (): Promise<TradingScheduleConfig> =>
-    request('/bot/trading-schedule'),
-
-  updateTradingSchedule: (data: {
-    enabled?: boolean;
-    start_hm?: string;
-    end_hm?: string;
-  }): Promise<TradingScheduleConfig> =>
-    request('/bot/trading-schedule', { method: 'POST', body: JSON.stringify(data) }),
-
-  getFeishuNotify: (): Promise<FeishuNotifySettings> => request('/bot/feishu-notify'),
-
-  updateFeishuNotify: (data: {
-    webhook_url?: string;
-    keyword_prefix?: string;
-    keyword_prefix_use_env_default?: boolean;
-  }): Promise<FeishuNotifySettings> =>
-    request('/bot/feishu-notify', { method: 'PUT', body: JSON.stringify(data) }),
 
   getWebUiPasswordStatus: (): Promise<WebUiPasswordStatus> => request('/bot/web-ui-password'),
 

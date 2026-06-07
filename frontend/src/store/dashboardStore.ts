@@ -36,12 +36,6 @@ const defaultData: DashboardData = {
   exchange_positions: [],
   strategy_stats: [],
   special_sl_restarts: [],
-  trading_window: {
-    enabled: false,
-    start_hm: '06:00',
-    end_hm: '21:00',
-    within_window: true,
-  },
 };
 
 export const useDashboardStore = create<DashboardState>((set) => ({

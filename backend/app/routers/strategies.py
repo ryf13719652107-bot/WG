@@ -1,26 +1,61 @@
 import asyncio
+import json
 import time
+import uuid
 from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy import select, func, delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from ..database import get_db
 from ..models.strategy import Strategy
+from ..models.bot_config import BotConfig
 from ..models.position import Position
 from ..models.trade import Trade
 from ..config import now_beijing
-from ..schemas.strategy import StrategyCreate, StrategyUpdate, StrategyResponse, StrategyStatsResponse, SlEvent
+from ..schemas.strategy import (
+    StrategyCreate,
+    StrategyUpdate,
+    StrategyResponse,
+    StrategyStatsResponse,
+    SlEvent,
+    StrategyParamTemplateCreate,
+    StrategyParamTemplateResponse,
+)
 from ..services.scheduler import strategy_scheduler
 from ..services.exchange_factory import get_exchange_service, clear_all_cache
 from ..services.exchange_base import BaseExchangeService
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
+_PARAM_TEMPLATE_KEY = "strategy_param_templates"
 
-class ScheduleParticipateBody(BaseModel):
-    participate: bool
+
+def _parse_param_templates(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+async def _load_param_templates(db: AsyncSession) -> list[dict]:
+    row = await db.execute(select(BotConfig).where(BotConfig.key == _PARAM_TEMPLATE_KEY))
+    cfg = row.scalar_one_or_none()
+    return _parse_param_templates(cfg.value if cfg else None)
+
+
+async def _save_param_templates(db: AsyncSession, templates: list[dict]) -> None:
+    payload = json.dumps(templates, ensure_ascii=False)
+    row = await db.execute(select(BotConfig).where(BotConfig.key == _PARAM_TEMPLATE_KEY))
+    cfg = row.scalar_one_or_none()
+    if cfg:
+        cfg.value = payload
+    else:
+        db.add(BotConfig(key=_PARAM_TEMPLATE_KEY, value=payload))
+    await db.commit()
 
 
 def _panic_symbol_key(sym: str) -> str:
@@ -50,26 +85,6 @@ def _flatten_cancel_open_order_task(exchange, row: dict, symbol: str):
     if oid:
         return exchange.cancel_order(oid, symbol)
     return None
-
-
-async def _other_running_strategy_ids_on_leg(
-    db: AsyncSession,
-    strategy: Strategy,
-    *,
-    exclude_id: int | None = None,
-) -> list[int]:
-    """同账户、同合约、同方向且仍在 running 的其它策略（含 24 小时策略）。"""
-    ex_id = exclude_id if exclude_id is not None else strategy.id
-    r = await db.execute(
-        select(Strategy.id).where(
-            Strategy.account_id == strategy.account_id,
-            Strategy.symbol == strategy.symbol,
-            Strategy.direction == strategy.direction,
-            Strategy.status == "running",
-            Strategy.id != ex_id,
-        )
-    )
-    return [int(row[0]) for row in r.all()]
 
 
 async def _flatten_strategy_orders_and_positions(
@@ -104,18 +119,6 @@ async def _flatten_strategy_orders_and_positions(
     dir_low = direction.lower()
     pos_filter = dir_low if hedge else None
 
-    isolate_leg = False
-    if close_reason == "schedule_stop":
-        others = await _other_running_strategy_ids_on_leg(db, strategy)
-        isolate_leg = len(others) > 0
-        if isolate_leg:
-            logging.info(
-                "_flatten_strategy schedule_stop %d: same leg still running strategies %s — "
-                "scoped cancel + partial close only",
-                strategy_id,
-                others,
-            )
-
     cancel_tasks: list = []
 
     if use_order_tracker:
@@ -133,10 +136,8 @@ async def _flatten_strategy_orders_and_positions(
         await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
     # OKX：普通限价与触发/计划单分域，仅靠 tracker + 单次 fetch_open_orders 撤不干净
-    if (
-        not isolate_leg
-        and getattr(exchange, "exchange_id", None) == "okx"
-        and hasattr(exchange, "cancel_all_pending_orders_for_symbol")
+    if getattr(exchange, "exchange_id", None) == "okx" and hasattr(
+        exchange, "cancel_all_pending_orders_for_symbol"
     ):
         try:
             n_bulk = await exchange.cancel_all_pending_orders_for_symbol(symbol, pos_filter)
@@ -149,22 +150,21 @@ async def _flatten_strategy_orders_and_positions(
         except Exception as e:
             logging.warning("_flatten_strategy: OKX cancel_all_pending_orders strategy=%d: %s", strategy_id, e)
 
-    if not isolate_leg:
-        try:
-            oo_list = await exchange.fetch_open_orders(symbol)
-            oo_cancel = []
-            for oo in oo_list or []:
-                if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
-                    continue
-                task = _flatten_cancel_open_order_task(exchange, oo, symbol)
-                if task is not None:
-                    oo_cancel.append(task)
-            if oo_cancel:
-                await asyncio.gather(*oo_cancel, return_exceptions=True)
-        except Exception as e:
-            logging.warning("_flatten_strategy: fetch_open_orders/cancel strategy=%d: %s", strategy_id, e)
+    try:
+        oo_list = await exchange.fetch_open_orders(symbol)
+        oo_cancel = []
+        for oo in oo_list or []:
+            if not BaseExchangeService.open_order_matches_strategy_scope(oo, symbol, dir_low, hedge):
+                continue
+            task = _flatten_cancel_open_order_task(exchange, oo, symbol)
+            if task is not None:
+                oo_cancel.append(task)
+        if oo_cancel:
+            await asyncio.gather(*oo_cancel, return_exceptions=True)
+    except Exception as e:
+        logging.warning("_flatten_strategy: fetch_open_orders/cancel strategy=%d: %s", strategy_id, e)
 
-    if not isolate_leg and hasattr(exchange, "cancel_all_open_algo_orders"):
+    if hasattr(exchange, "cancel_all_open_algo_orders"):
         try:
             n = await exchange.cancel_all_open_algo_orders(symbol, pos_filter)
             if n:
@@ -206,10 +206,7 @@ async def _flatten_strategy_orders_and_positions(
 
     ex_avg_entry = exchange_entry_cost / exchange_qty if exchange_qty > 1e-12 else 0.0
 
-    if isolate_leg:
-        raw_close_qty = total_qty
-    else:
-        raw_close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
+    raw_close_qty = exchange_qty if exchange_qty > 1e-12 else total_qty
     try:
         close_qty = await exchange.normalize_order_amount(symbol, raw_close_qty)
     except Exception as e:
@@ -223,32 +220,30 @@ async def _flatten_strategy_orders_and_positions(
     def _log_close_success(msg: str) -> None:
         if close_reason == "panic_close":
             strategy_log_service.success(strategy_id, msg)
-        elif close_reason in ("equity_stop", "schedule_stop"):
+        elif close_reason == "equity_stop":
             strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.success(strategy_id, msg)
 
     def _log_close_error(msg: str) -> None:
-        if close_reason in ("panic_close", "equity_stop", "schedule_stop"):
+        if close_reason in ("panic_close", "equity_stop"):
             strategy_log_service.error(strategy_id, msg)
         else:
             strategy_log_service.error(strategy_id, msg)
 
     if has_position_hint:
         # 优先 close_position：按交易所实时张数平仓，避免 normalize 为 0 或数量与 DB 不一致
-        # 同腿仍有其它 running 策略（如 24 小时）时禁止全腿平仓，仅按本策略 DB 数量减仓
-        if not isolate_leg:
-            try:
-                order_cp = await exchange.close_position(symbol, direction)
-                if order_cp:
-                    close_success = True
-                    exit_price = BaseExchangeService.avg_fill_price_from_order(order_cp)
-                    _log_close_success(
-                        f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(close_position): "
-                        f"{symbol} 价格={exit_price:.4f}",
-                    )
-            except Exception as e:
-                logging.error("_flatten_strategy close_position strategy=%d %s: %s", strategy_id, symbol, e)
+        try:
+            order_cp = await exchange.close_position(symbol, direction)
+            if order_cp:
+                close_success = True
+                exit_price = BaseExchangeService.avg_fill_price_from_order(order_cp)
+                _log_close_success(
+                    f"{'紧急平仓' if close_reason == 'panic_close' else '策略删除平仓'}成功(close_position): "
+                    f"{symbol} 价格={exit_price:.4f}",
+                )
+        except Exception as e:
+            logging.error("_flatten_strategy close_position strategy=%d %s: %s", strategy_id, symbol, e)
 
         if not close_success and close_qty > 1e-12:
             try:
@@ -268,7 +263,7 @@ async def _flatten_strategy_orders_and_positions(
                     f"{'紧急平仓' if close_reason == 'panic_close' else '删除策略平仓'}失败: {e}",
                 )
 
-        if not isolate_leg and not close_success and exchange_qty > 1e-12:
+        if not close_success and exchange_qty > 1e-12:
             try:
                 order2 = await exchange.close_position(symbol, direction)
                 if order2:
@@ -296,8 +291,6 @@ async def _flatten_strategy_orders_and_positions(
             strategy_log_service.info(strategy_id, "紧急平仓: 无持仓需要平仓")
         elif close_reason == "equity_stop":
             strategy_log_service.info(strategy_id, "总资产止损: 无持仓需要平仓")
-        elif close_reason == "schedule_stop":
-            strategy_log_service.info(strategy_id, "交易时段收市: 无持仓需要平仓")
         else:
             strategy_log_service.info(strategy_id, "删除策略: 无持仓需要平仓")
 
@@ -432,6 +425,193 @@ async def list_strategies(
     return [StrategyResponse.model_validate(s) for s in result.scalars().all()]
 
 
+@router.get("/param-templates", response_model=list[StrategyParamTemplateResponse])
+async def list_param_templates(db: AsyncSession = Depends(get_db)):
+    """列出已保存的策略参数模版。"""
+    templates = await _load_param_templates(db)
+    out: list[StrategyParamTemplateResponse] = []
+    for t in templates:
+        try:
+            out.append(StrategyParamTemplateResponse.model_validate(t))
+        except Exception:
+            continue
+    return out
+
+
+@router.post("/param-templates", response_model=StrategyParamTemplateResponse)
+async def save_param_template(
+    body: StrategyParamTemplateCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """保存策略参数模版（不含账户/方向/交易对）。"""
+    templates = await _load_param_templates(db)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "name": body.name.strip(),
+        "params": body.params.model_dump(),
+        "created_at": now_beijing().isoformat(sep=" ", timespec="seconds"),
+    }
+    templates.append(entry)
+    await _save_param_templates(db, templates)
+    return StrategyParamTemplateResponse.model_validate(entry)
+
+
+@router.delete("/param-templates/{template_id}")
+async def delete_param_template(template_id: str, db: AsyncSession = Depends(get_db)):
+    templates = await _load_param_templates(db)
+    new_list = [t for t in templates if str(t.get("id")) != template_id]
+    if len(new_list) == len(templates):
+        raise HTTPException(status_code=404, detail="模版不存在")
+    await _save_param_templates(db, new_list)
+    return {"ok": True}
+
+
+@router.post("/bulk/start")
+async def bulk_start_strategies(
+    account_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """一键启动账户下全部已停止策略。"""
+    from ..services.account_equity_guard import is_account_trading_halted
+
+    stmt = select(Strategy).where(Strategy.status.in_(["stopped", "error"]))
+    if account_id is not None:
+        stmt = stmt.where(Strategy.account_id == account_id)
+    strategies = list((await db.execute(stmt)).scalars().all())
+
+    started, failed, skipped = 0, 0, 0
+    errors: list[str] = []
+    halted_accounts: set[int] = set()
+
+    for s in strategies:
+        if s.account_id in halted_accounts:
+            skipped += 1
+            continue
+        if await is_account_trading_halted(s.account_id, db):
+            halted_accounts.add(s.account_id)
+            skipped += 1
+            errors.append(f"{s.symbol}({s.direction}): 账户总资产止损已触发")
+            continue
+        ok = await strategy_scheduler.add_strategy(s.id, session=db)
+        if ok:
+            started += 1
+        else:
+            failed += 1
+            errors.append(f"{s.symbol}({s.direction}): 启动失败")
+
+    return {
+        "started": started,
+        "failed": failed,
+        "skipped": skipped,
+        "total": len(strategies),
+        "errors": errors[:20],
+    }
+
+
+@router.post("/bulk/stop")
+async def bulk_stop_strategies(
+    account_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """一键停止账户下全部运行中策略。"""
+    stmt = select(Strategy).where(Strategy.status == "running")
+    if account_id is not None:
+        stmt = stmt.where(Strategy.account_id == account_id)
+    strategies = list((await db.execute(stmt)).scalars().all())
+
+    stopped = 0
+    for s in strategies:
+        await strategy_scheduler.remove_strategy(s.id)
+        st = await db.get(Strategy, s.id)
+        if st and st.status != "stopped":
+            st.status = "stopped"
+        stopped += 1
+    await db.commit()
+
+    return {"stopped": stopped, "total": len(strategies)}
+
+
+@router.post("/bulk/panic-close")
+async def bulk_panic_close(
+    account_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """一键平仓账户下全部策略持仓（紧急平仓）。"""
+    import logging
+
+    stmt = select(Strategy)
+    if account_id is not None:
+        stmt = stmt.where(Strategy.account_id == account_id)
+    strategies = list((await db.execute(stmt)).scalars().all())
+
+    closed, failed, no_position = 0, 0, 0
+    results: list[dict] = []
+
+    for s in strategies:
+        if not await get_exchange_service(s.account_id):
+            failed += 1
+            results.append({
+                "strategy_id": s.id,
+                "symbol": s.symbol,
+                "direction": s.direction,
+                "status": "failed",
+                "error": "交易所不可用",
+            })
+            continue
+        try:
+            await strategy_scheduler.remove_strategy(s.id)
+        except Exception as e:
+            logging.warning("bulk panic remove_strategy %d: %s", s.id, e)
+        try:
+            await db.refresh(s)
+            close_ok, qty, exit_px = await _flatten_strategy_orders_and_positions(
+                s, db, close_reason="panic_close", use_order_tracker=True,
+            )
+            s.status = "stopped"
+            await db.commit()
+            if close_ok:
+                if qty > 1e-12:
+                    closed += 1
+                else:
+                    no_position += 1
+                results.append({
+                    "strategy_id": s.id,
+                    "symbol": s.symbol,
+                    "direction": s.direction,
+                    "status": "closed" if qty > 1e-12 else "no_position",
+                    "exit_price": exit_px,
+                    "quantity": qty,
+                })
+            else:
+                failed += 1
+                results.append({
+                    "strategy_id": s.id,
+                    "symbol": s.symbol,
+                    "direction": s.direction,
+                    "status": "failed",
+                    "error": "交易所未确认平仓",
+                })
+        except Exception as e:
+            await db.rollback()
+            failed += 1
+            logging.exception("bulk panic strategy %d: %s", s.id, e)
+            results.append({
+                "strategy_id": s.id,
+                "symbol": s.symbol,
+                "direction": s.direction,
+                "status": "failed",
+                "error": str(e),
+            })
+
+    return {
+        "closed": closed,
+        "failed": failed,
+        "no_position": no_position,
+        "total": len(strategies),
+        "results": results,
+    }
+
+
 @router.get("/{strategy_id}", response_model=StrategyResponse)
 async def get_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     strategy = await db.get(Strategy, strategy_id)
@@ -506,12 +686,6 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
             detail="该账户已触发总资产止损，全部策略已停止。请在「系统设置」中重置账户止损状态后再启动。",
         )
 
-    from ..services.trading_schedule import trading_window_allows_start
-    allowed, deny_msg = await trading_window_allows_start(strategy)
-    if not allowed:
-        raise HTTPException(status_code=400, detail=deny_msg)
-
-    strategy.stopped_by_schedule = False
     ok = await strategy_scheduler.add_strategy(strategy_id, session=db)
     if not ok:
         await db.refresh(strategy)
@@ -523,17 +697,6 @@ async def start_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     return {"status": "running", "id": strategy_id}
 
 
-@router.post("/{strategy_id}/schedule-participate")
-async def set_schedule_participate(strategy_id: int, body: ScheduleParticipateBody):
-    """仪表盘开关：participate=true 参与全局交易时段；false 为正常连续运行。"""
-    from ..services.trading_schedule import apply_schedule_participate
-
-    result = await apply_schedule_participate(strategy_id, body.participate)
-    if not result.get("ok"):
-        raise HTTPException(status_code=404, detail=result.get("detail", "策略不存在"))
-    return result
-
-
 @router.post("/{strategy_id}/stop")
 async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     strategy = await db.get(Strategy, strategy_id)
@@ -541,7 +704,6 @@ async def stop_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Strategy not found")
     await strategy_scheduler.remove_strategy(strategy_id)
     await db.refresh(strategy)
-    strategy.stopped_by_schedule = False
     if strategy.status != "stopped":
         strategy.status = "stopped"
     await db.commit()

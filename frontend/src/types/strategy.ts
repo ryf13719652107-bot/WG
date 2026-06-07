@@ -11,12 +11,20 @@ export interface Strategy {
   grid_interval_multiplier: number;
   position_multiplier: number;
   cumulative_loss_threshold_u: number;
-  stop_loss_close_pct: number;
   reopen_after_close: boolean;
   status: 'running' | 'stopped' | 'error';
   started_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type StrategyParamFields = Omit<StrategyFormData, 'account_id' | 'direction' | 'symbol'>;
+
+export interface StrategyParamTemplate {
+  id: string;
+  name: string;
+  params: StrategyParamFields;
+  created_at: string;
 }
 
 export interface StrategyFormData {
@@ -31,6 +39,5 @@ export interface StrategyFormData {
   grid_interval_multiplier: number;
   position_multiplier: number;
   cumulative_loss_threshold_u: number;
-  stop_loss_close_pct: number;
   reopen_after_close: boolean;
 }

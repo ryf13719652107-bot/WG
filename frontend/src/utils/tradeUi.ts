@@ -9,7 +9,6 @@ export function formatCloseReason(cr: string | undefined | null): string {
     sync: '同步平仓',
     margin_stop: '保证金止损',
     equity_stop: '总资产止损',
-    schedule_stop: '时段收市',
     manual: '手动平仓',
     strategy_deleted: '策略删除',
     策略删除: '策略删除',

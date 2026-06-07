@@ -14,7 +14,6 @@ class MockStrategy:
         self.position_multiplier = kwargs.get("position_multiplier", 1.5)
         self.max_layers = kwargs.get("max_layers", 8)
         self.cumulative_loss_threshold_u = kwargs.get("cumulative_loss_threshold_u", 0.0)
-        self.stop_loss_close_pct = kwargs.get("stop_loss_close_pct", 100.0)
         self.leverage = kwargs.get("leverage", 20)
 
 
