@@ -400,7 +400,7 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
                 detail=f"币种 {data.symbol} 已存在同方向策略（ID={s.id}），每币种只允许一多一空",
             )
 
-    strategy = Strategy(**data.model_dump())
+    strategy = Strategy(**data.model_dump(), base_qty_type="usdt")
     db.add(strategy)
     await db.commit()
     await db.refresh(strategy)
@@ -634,6 +634,7 @@ async def update_strategy(
 
     for key, val in data.model_dump(exclude_unset=True).items():
         setattr(strategy, key, val)
+    strategy.base_qty_type = "usdt"
     await db.commit()
     await db.refresh(strategy)
 

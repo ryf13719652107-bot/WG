@@ -1612,34 +1612,17 @@ class GridExecutor:
         position_side = "LONG" if strategy.direction == "long" else "SHORT"
 
         qty = 0.0
-        if strategy.base_qty_type == "margin_pct":
-            try:
-                balance = await exchange.fetch_balance()
-                total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
-                usdt_amount = total_usdt * (strategy.base_qty_value / 100.0)
-                if current_price > 0:
-                    qty = await self._resolve_qty_from_usdt(
-                        exchange, symbol, usdt_amount, float(current_price),
-                        strategy_id=strategy.id, log_label="开仓",
-                    )
-            except Exception as e:
-                logger.warning("Failed to calculate margin-based qty: %s", e)
-                strategy_log_service.error(strategy.id, f"开仓失败: 获取余额异常 - {e}")
-                strategy.consecutive_failures = int(getattr(strategy, "consecutive_failures", 0) or 0) + 1
-                await _c()
-                return False
+        if current_price > 0:
+            qty = await self._resolve_qty_from_usdt(
+                exchange, symbol, float(strategy.base_qty_value), float(current_price),
+                strategy_id=strategy.id, log_label="开仓",
+            )
         else:
-            if current_price > 0:
-                qty = await self._resolve_qty_from_usdt(
-                    exchange, symbol, float(strategy.base_qty_value), float(current_price),
-                    strategy_id=strategy.id, log_label="开仓",
-                )
-            else:
-                logger.error("Cannot calculate qty: current_price is 0")
-                strategy_log_service.error(strategy.id, "开仓失败: 无法获取当前价格")
-                strategy.consecutive_failures = int(getattr(strategy, "consecutive_failures", 0) or 0) + 1
-                await _c()
-                return False
+            logger.error("Cannot calculate qty: current_price is 0")
+            strategy_log_service.error(strategy.id, "开仓失败: 无法获取当前价格")
+            strategy.consecutive_failures = int(getattr(strategy, "consecutive_failures", 0) or 0) + 1
+            await _c()
+            return False
 
         if qty <= 0:
             logger.error("Calculated qty is 0 for strategy %d", strategy.id)
@@ -1795,27 +1778,11 @@ class GridExecutor:
                 f"已调整为 {trigger_price:.4f}（{clamp_hint}）",
             )
 
-        qty = 0.0
-        if strategy.base_qty_type == "margin_pct":
-            try:
-                balance = await exchange.fetch_balance()
-                total_usdt = float(balance.get("total", {}).get("USDT", 0) or 0)
-                usdt_amount = total_usdt * (raw_size / 100.0)
-                qty = await self._resolve_qty_from_usdt(
-                    exchange, symbol, usdt_amount, float(trigger_price),
-                    strategy_id=strategy.id,
-                    log_label=f"挂单加仓 Lv{grid_level.level}",
-                )
-            except Exception as e:
-                logger.warning("Failed to calculate margin-based grid add qty: %s", e)
-                strategy_log_service.error(strategy.id, f"挂单加仓 Lv{grid_level.level} 失败: 余额查询异常")
-                return None
-        else:
-            qty = await self._resolve_qty_from_usdt(
-                exchange, symbol, float(raw_size), float(trigger_price),
-                strategy_id=strategy.id,
-                log_label=f"挂单加仓 Lv{grid_level.level}",
-            )
+        qty = await self._resolve_qty_from_usdt(
+            exchange, symbol, float(raw_size), float(trigger_price),
+            strategy_id=strategy.id,
+            log_label=f"挂单加仓 Lv{grid_level.level}",
+        )
 
         if qty <= 0:
             logger.error("Grid add qty is 0 for strategy %d level %d", strategy.id, grid_level.level)

@@ -111,7 +111,7 @@ export default function StrategyDetailPage() {
           </div>
           <div>
             <span className={labelClass}>首单仓位</span>
-            <div className={valClass}>{strategy.base_qty_type === 'margin_pct' ? `保证金${strategy.base_qty_value}%` : `${strategy.base_qty_value} USDT`}</div>
+            <div className={valClass}>{strategy.base_qty_value} USDT</div>
           </div>
           <div>
             <span className={labelClass}>止盈比例</span>

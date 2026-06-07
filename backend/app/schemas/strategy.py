@@ -4,7 +4,6 @@ from typing import Optional, Literal
 
 
 class StrategyParamTemplateParams(BaseModel):
-    base_qty_type: Literal["margin_pct", "usdt"] = "margin_pct"
     base_qty_value: float = Field(default=6.0, gt=0)
     max_layers: int = Field(default=6, ge=1, le=99999)
     tp_pct: float = Field(default=1.0, gt=0, le=50)
@@ -43,8 +42,7 @@ class StrategyCreate(BaseModel):
     account_id: int
     direction: Literal["long", "short"]
     symbol: str = Field(min_length=1, max_length=50)
-    # Entry
-    base_qty_type: Literal["margin_pct", "usdt"] = "margin_pct"
+    # Entry (固定 USDT 名义)
     base_qty_value: float = Field(default=6.0, gt=0)
     # Grid params
     max_layers: int = Field(default=6, ge=1, le=99999)
@@ -60,7 +58,6 @@ class StrategyCreate(BaseModel):
 
 class StrategyUpdate(BaseModel):
     """可编辑的策略参数,运行中也能修改(自动停启生效)."""
-    base_qty_type: Optional[Literal["margin_pct", "usdt"]] = None
     base_qty_value: Optional[float] = Field(default=None, gt=0)
     max_layers: Optional[int] = Field(default=None, ge=1, le=99999)
     tp_pct: Optional[float] = Field(default=None, gt=0, le=50)

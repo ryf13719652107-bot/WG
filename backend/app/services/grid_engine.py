@@ -34,7 +34,6 @@ class GridStrategyEngine:
 
     def __init__(self, strategy):
         self.base_qty = float(strategy.base_qty_value)
-        self.base_qty_type = strategy.base_qty_type
         self.tp_pct = float(strategy.tp_pct)
         self.drop_base_pct = float(strategy.grid_drop_base_pct)
         self.interval_mult = float(strategy.grid_interval_multiplier)

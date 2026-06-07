@@ -19,7 +19,7 @@ class Strategy(Base):
     symbol: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Entry position params
-    base_qty_type: Mapped[str] = mapped_column(String(20), default="margin_pct")  # 'margin_pct' or 'usdt'
+    base_qty_type: Mapped[str] = mapped_column(String(20), default="usdt")  # 固定 USDT 名义
     base_qty_value: Mapped[float] = mapped_column(Float, default=6.0)
 
     # Martingale grid params

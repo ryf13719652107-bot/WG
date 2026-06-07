@@ -3,7 +3,7 @@ export interface Strategy {
   account_id: number;
   direction: 'long' | 'short';
   symbol: string;
-  base_qty_type: 'margin_pct' | 'usdt';
+  base_qty_type: string;
   base_qty_value: number;
   max_layers: number;
   tp_pct: number;
@@ -31,7 +31,6 @@ export interface StrategyFormData {
   account_id: number;
   direction: 'long' | 'short';
   symbol: string;
-  base_qty_type: 'margin_pct' | 'usdt';
   base_qty_value: number;
   max_layers: number;
   tp_pct: number;

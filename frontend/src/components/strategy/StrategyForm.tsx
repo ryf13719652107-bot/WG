@@ -10,7 +10,6 @@ const schema = z.object({
   account_id: z.number().min(1, '请选择账户'),
   direction: z.enum(['long', 'short']),
   symbol: z.string().min(1, '请选择交易对'),
-  base_qty_type: z.enum(['margin_pct', 'usdt']),
   base_qty_value: z.number().min(0.01),
   max_layers: z.number().min(1).max(99999),
   tp_pct: z.number().min(0.1).max(50),
@@ -34,7 +33,6 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
       account_id: initial.account_id,
       direction: initial.direction,
       symbol: initial.symbol,
-      base_qty_type: initial.base_qty_type,
       base_qty_value: initial.base_qty_value,
       max_layers: initial.max_layers,
       tp_pct: initial.tp_pct,
@@ -49,7 +47,6 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
     account_id: accounts[0]?.id || 0,
     direction: 'long',
     symbol: '',
-    base_qty_type: 'margin_pct',
     base_qty_value: 6,
     max_layers: 6,
     tp_pct: 1,
@@ -159,7 +156,6 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
               if (!name?.trim()) return;
               const values = watch();
               const params: StrategyParamFields = {
-                base_qty_type: values.base_qty_type,
                 base_qty_value: values.base_qty_value,
                 max_layers: values.max_layers,
                 tp_pct: values.tp_pct,
@@ -286,18 +282,10 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
         <div className="border-t border-gray-800 my-3" />
 
         <h4 className="text-sm font-semibold text-gray-300">首单开仓设置</h4>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={labelClass}>仓位类型</label>
-            <select {...register('base_qty_type')} className={inputClass}>
-              <option value="margin_pct">保证金百分比</option>
-              <option value="usdt">固定USDT金额</option>
-            </select>
-          </div>
-          <div>
-            <label className={labelClass}>首单仓位数值</label>
-            <input type="number" step="0.01" {...register('base_qty_value', { valueAsNumber: true })} className={inputClass} />
-          </div>
+        <div>
+          <label className={labelClass}>首单仓位 (USDT)</label>
+          <input type="number" step="0.01" {...register('base_qty_value', { valueAsNumber: true })} className={inputClass} />
+          <span className="text-xs text-gray-600">按固定 USDT 名义计算开仓数量</span>
         </div>
 
         <div className="border-t border-gray-800 my-3" />

@@ -7,7 +7,6 @@ from app.services.exchange_base import BaseExchangeService
 class MockStrategy:
     def __init__(self, **kwargs):
         self.base_qty_value = kwargs.get("base_qty_value", 1.0)
-        self.base_qty_type = kwargs.get("base_qty_type", "usdt")
         self.tp_pct = kwargs.get("tp_pct", 1.0)
         self.grid_drop_base_pct = kwargs.get("grid_drop_base_pct", 1.0)
         self.grid_interval_multiplier = kwargs.get("grid_interval_multiplier", 1.5)
