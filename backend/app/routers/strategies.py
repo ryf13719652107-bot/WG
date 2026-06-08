@@ -380,10 +380,7 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
     # Constraint: max 2 strategies per symbol (one long + one short)
     norm_sym = _norm_sym(data.symbol)
     result = await db.execute(
-        select(Strategy).where(
-            Strategy.account_id == data.account_id,
-            Strategy.symbol.is_not(None),
-        )
+        select(Strategy).where(Strategy.account_id == data.account_id)
     )
     existing = result.scalars().all()
     same_sym = [s for s in existing if _norm_sym(s.symbol or "") == norm_sym]
@@ -400,11 +397,24 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
                 detail=f"币种 {data.symbol} 已存在同方向策略（ID={s.id}），每币种只允许一多一空",
             )
 
-    strategy = Strategy(**data.model_dump(), base_qty_type="usdt")
+    payload = data.model_dump()
+    payload["base_qty_type"] = "usdt"
+    strategy = Strategy(**payload)
     db.add(strategy)
-    await db.commit()
-    await db.refresh(strategy)
-    return StrategyResponse.model_validate(strategy)
+    try:
+        await db.commit()
+        await db.refresh(strategy)
+    except Exception as e:
+        await db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("create_strategy db commit failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"创建策略失败: {e}") from e
+    try:
+        return StrategyResponse.model_validate(strategy)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("create_strategy response validate failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"创建策略响应校验失败: {e}") from e
 
 
 @router.get("", response_model=list[StrategyResponse])

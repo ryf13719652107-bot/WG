@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional, Literal
 
@@ -75,7 +75,7 @@ class StrategyResponse(BaseModel):
     account_id: int
     direction: str
     symbol: str
-    base_qty_type: str
+    base_qty_type: str = "usdt"
     base_qty_value: float
     max_layers: int
     tp_pct: float
@@ -90,3 +90,15 @@ class StrategyResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("base_qty_type", mode="before")
+    @classmethod
+    def _default_qty_type(cls, v):
+        return v or "usdt"
+
+    @field_validator("reopen_after_close", mode="before")
+    @classmethod
+    def _coerce_reopen(cls, v):
+        if v is None:
+            return True
+        return bool(v)

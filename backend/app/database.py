@@ -219,6 +219,9 @@ async def init_db():
             ("strategies", "exclude_tradefi"),
             ("strategies", "name"),
             ("strategies", "leverage"),
+            ("strategies", "stop_loss_close_pct"),
+            ("strategies", "stopped_by_schedule"),
+            ("strategies", "schedule_participate"),
         ]
         for table, column in legacy_drops:
             try:
