@@ -399,6 +399,10 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
 
     payload = data.model_dump()
     payload["base_qty_type"] = "usdt"
+    # 旧库 NOT NULL 遗留列（模型保留默认值，业务已废弃）
+    payload.setdefault("stop_loss_close_pct", 100.0)
+    payload.setdefault("stopped_by_schedule", False)
+    payload.setdefault("schedule_participate", False)
     strategy = Strategy(**payload)
     db.add(strategy)
     try:

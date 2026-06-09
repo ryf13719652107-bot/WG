@@ -15,6 +15,7 @@ def test_strategy_create_payload_merge():
     payload["base_qty_type"] = "usdt"
     s = Strategy(**payload)
     assert s.base_qty_type == "usdt"
+    assert s.stop_loss_close_pct == 100.0
 
 
 def test_strategy_create_no_duplicate_base_qty_type():
@@ -23,6 +24,7 @@ def test_strategy_create_no_duplicate_base_qty_type():
     payload["base_qty_type"] = "usdt"
     s = Strategy(**payload)
     assert s.base_qty_type == "usdt"
+    assert s.stop_loss_close_pct == 100.0
 
 
 def test_strategy_response_nullable_fields():
