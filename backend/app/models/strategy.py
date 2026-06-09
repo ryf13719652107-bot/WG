@@ -33,10 +33,8 @@ class Strategy(Base):
     cumulative_loss_threshold_u: Mapped[float] = mapped_column(Float, default=0.0)  # 条件止损名义亏损额 U；0=不挂止损单
     reopen_after_close: Mapped[bool] = mapped_column(Boolean, default=True)  # 止盈全平后是否自动重开首单
 
-    # 已废弃（仅兼容旧库 NOT NULL 列；API/业务逻辑不再使用）
+    # 已废弃（仅兼容部分旧库 NOT NULL 列；API/业务逻辑不再使用）
     stop_loss_close_pct: Mapped[float] = mapped_column(Float, default=100.0, server_default="100.0")
-    stopped_by_schedule: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    schedule_participate: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'

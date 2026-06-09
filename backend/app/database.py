@@ -194,6 +194,7 @@ async def init_db():
             "ALTER TABLE strategies ADD COLUMN cumulative_loss_threshold_u FLOAT DEFAULT 0.0",
             "ALTER TABLE strategies ADD COLUMN reopen_after_close BOOLEAN DEFAULT 1",
             "ALTER TABLE strategies ADD COLUMN consecutive_failures INTEGER DEFAULT 0",
+            "ALTER TABLE strategies ADD COLUMN stop_loss_close_pct FLOAT DEFAULT 100.0 NOT NULL",
             "ALTER TABLE positions ADD COLUMN grid_level INTEGER DEFAULT 0",
             "ALTER TABLE positions ADD COLUMN grid_trigger_price NUMERIC(20,8)",
             "ALTER TABLE positions ADD COLUMN tp_limit_order_id VARCHAR(100)",
