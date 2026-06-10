@@ -69,47 +69,87 @@ class BaseExchangeService(ABC):
         return s
 
     @staticmethod
-    def extract_usdt_perp_symbols(raw_markets) -> list[str]:
+    def _market_is_usdt_perp(m: dict, *, permissive: bool = False) -> Optional[str]:
+        """若 market 为 USDT 本位永续则返回归一化符号（如 LABUSDT），否则 None。"""
+        if not isinstance(m, dict):
+            return None
+        if m.get("active") is False:
+            return None
+        sym = str(m.get("id") or m.get("symbol") or "")
+        norm = BaseExchangeService._norm_sym(sym)
+        if not norm.endswith("USDT") or len(norm) <= 4:
+            return None
+        base = norm[:-4]
+        if "_" in base:
+            return None
+        if m.get("expiry") or m.get("expiryDatetime"):
+            return None
+        if m.get("spot"):
+            return None
+        quote = str(m.get("quote") or "").upper()
+        settle = str(m.get("settle") or "").upper()
+        if quote and quote not in ("USDT", "") and settle not in ("USDT", ""):
+            return None
+        if m.get("inverse"):
+            return None
+        mtype = str(m.get("type") or "").lower()
+        is_perp = (
+            mtype in ("swap", "future")
+            or m.get("swap")
+            or m.get("linear")
+            or (m.get("contract") and not m.get("expiry"))
+        )
+        if not is_perp and permissive:
+            # 新上架币种 ccxt 字段可能不全；非现货且 USDT 结尾则纳入
+            is_perp = True
+        if not is_perp:
+            return None
+        return norm
+
+    @staticmethod
+    def extract_usdt_perp_symbols(raw_markets, *, permissive: bool = True) -> list[str]:
         """从 ccxt load_markets 结果提取 USDT 本位永续合约符号（统一为 BTCUSDT 格式）。"""
         if isinstance(raw_markets, dict):
             raw_markets = list(raw_markets.values())
         symbols: list[str] = []
         seen: set[str] = set()
         for m in raw_markets or []:
-            if not isinstance(m, dict):
-                continue
-            if m.get("active") is False:
-                continue
-            sym = str(m.get("id") or m.get("symbol") or "")
-            norm = BaseExchangeService._norm_sym(sym)
-            if not norm.endswith("USDT") or len(norm) <= 4:
-                continue
-            base = norm[:-4]
-            if "_" in base:
-                continue
-            if m.get("expiry") or m.get("expiryDatetime"):
-                continue
-            quote = str(m.get("quote") or "").upper()
-            settle = str(m.get("settle") or "").upper()
-            if quote and quote not in ("USDT", "") and settle not in ("USDT", ""):
-                continue
-            if m.get("spot"):
-                continue
-            mtype = str(m.get("type") or "").lower()
-            is_perp = (
-                mtype in ("swap", "future")
-                or m.get("swap")
-                or m.get("linear")
-                or (m.get("contract") and not m.get("expiry"))
-            )
-            if not is_perp:
-                continue
-            if norm in seen:
+            norm = BaseExchangeService._market_is_usdt_perp(m, permissive=permissive)
+            if not norm or norm in seen:
                 continue
             seen.add(norm)
             symbols.append(norm)
         symbols.sort()
         return symbols
+
+    async def list_usdt_perp_symbols(self) -> list[str]:
+        """列出交易所全部 USDT 本位永续（子类可基于 exchange.markets 优化）。"""
+        raw = await self.fetch_markets()
+        return self.extract_usdt_perp_symbols(raw, permissive=True)
+
+    async def search_usdt_perp_symbols(self, query: str, limit: int = 30) -> list[str]:
+        """按关键字搜索 USDT 永续；支持 LAB → LABUSDT。"""
+        q = (query or "").strip().upper()
+        if not q:
+            return []
+        all_syms = await self.list_usdt_perp_symbols()
+        matches = [s for s in all_syms if q in s]
+        if matches:
+            return matches[:limit]
+        cand = q if q.endswith("USDT") else f"{q}USDT"
+        exact = [s for s in all_syms if s == cand]
+        if exact:
+            return exact[:limit]
+        try:
+            await self.fetch_markets()
+            markets = getattr(self.exchange, "markets", None) or {}
+            formatted = self._format_symbol(cand)
+            m = markets.get(formatted)
+            if m and BaseExchangeService._market_is_usdt_perp(m, permissive=True):
+                return [cand]
+        except Exception:
+            pass
+        return []
 
     @staticmethod
     def avg_fill_price_from_order(raw: dict | None) -> float:

@@ -172,6 +172,13 @@ export const api = {
     const q = params.toString();
     return request(`/markets${q ? `?${q}` : ''}`);
   },
+
+  searchMarkets: (query: string, exchange?: string, accountId?: number): Promise<{ symbols: string[] }> => {
+    const params = new URLSearchParams({ q: query });
+    if (exchange) params.set('exchange', exchange);
+    if (accountId) params.set('account_id', String(accountId));
+    return request(`/markets/search?${params.toString()}`);
+  },
   getStrategyCounts: (accountId?: number): Promise<{
     counts: Record<string, number>;
     directions: Record<string, string[]>;

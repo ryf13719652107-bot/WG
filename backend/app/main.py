@@ -204,8 +204,7 @@ async def get_markets(exchange: str = "binance", account_id: int | None = None):
             ex = await fetcher()
             if not ex:
                 continue
-            raw = await ex.fetch_markets()
-            symbols = BaseExchangeService.extract_usdt_perp_symbols(raw)
+            symbols = await ex.list_usdt_perp_symbols()
             if symbols:
                 _MARKETS_CACHE[cache_key] = (now, symbols)
                 return {"symbols": symbols}
@@ -223,6 +222,34 @@ async def get_markets(exchange: str = "binance", account_id: int | None = None):
         "1INCHUSDT", "AAVEUSDT", "ALGOUSDT", "APEUSDT", "ARUSDT",
     ]
     return {"symbols": popular}
+
+
+@app.get("/api/markets/search")
+async def search_markets(
+    q: str = Query(..., min_length=1, max_length=32),
+    exchange: str = "binance",
+    account_id: int | None = None,
+):
+    """按关键字搜索 USDT 永续（本地列表未命中时前端补查）。"""
+    from .services.exchange_factory import get_exchange_service, get_public_exchange
+
+    log = logging.getLogger(__name__)
+    sources: list = []
+    if account_id:
+        sources.append(lambda aid=account_id: get_exchange_service(aid))
+    sources.append(lambda ex=exchange: get_public_exchange(ex))
+
+    for fetcher in sources:
+        try:
+            ex = await fetcher()
+            if not ex:
+                continue
+            symbols = await ex.search_usdt_perp_symbols(q, limit=50)
+            if symbols:
+                return {"symbols": symbols}
+        except Exception as e:
+            log.debug("search_markets %s: %s", q, e)
+    return {"symbols": []}
 
 
 @app.get("/api/markets/strategy-counts")

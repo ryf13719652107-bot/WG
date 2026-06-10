@@ -189,6 +189,20 @@ class OkxService(BaseExchangeService):
             return list(raw.values())
         return raw or []
 
+    async def list_usdt_perp_symbols(self) -> list[str]:
+        await retry_with_backoff(
+            "okx.list_usdt_perp",
+            lambda: self.exchange.load_markets(True),
+        )
+        seen: set[str] = set()
+        for m in (self.exchange.markets or {}).values():
+            norm = BaseExchangeService._market_is_usdt_perp(m, permissive=True)
+            if norm:
+                seen.add(norm)
+        if seen:
+            return sorted(seen)
+        return await super().list_usdt_perp_symbols()
+
     async def _market_min_amount(self, symbol: str) -> float:
         formatted = self._format_symbol(symbol)
         try:

@@ -67,6 +67,8 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
   const [symbols, setSymbols] = useState<string[]>([]);
   const [symbolsLoading, setSymbolsLoading] = useState(false);
   const [symbolsError, setSymbolsError] = useState('');
+  const [remoteSymbols, setRemoteSymbols] = useState<string[]>([]);
+  const [remoteSearching, setRemoteSearching] = useState(false);
   const [strategyCounts, setStrategyCounts] = useState<Record<string, number>>({});
   const [strategyDirs, setStrategyDirs] = useState<Record<string, string[]>>({});
   const [search, setSearch] = useState(initialData?.symbol || '');
@@ -120,9 +122,40 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
     }
   }, [selectedAccountId]);
 
+  useEffect(() => {
+    const q = search.trim();
+    if (!selectedAccountId || q.length < 2) {
+      setRemoteSymbols([]);
+      setRemoteSearching(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const qq = q.toUpperCase();
+      const hasLocal = symbols.some((sym) => sym.includes(qq));
+      if (hasLocal) {
+        setRemoteSymbols([]);
+        setRemoteSearching(false);
+        return;
+      }
+      const acct = accounts.find((a) => a.id === selectedAccountId);
+      const ex = acct?.exchange || 'binance';
+      setRemoteSearching(true);
+      api.searchMarkets(q, ex, selectedAccountId)
+        .then((r) => setRemoteSymbols(r.symbols || []))
+        .catch(() => setRemoteSymbols([]))
+        .finally(() => setRemoteSearching(false));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [search, symbols, selectedAccountId, accounts]);
+
+  const symbolPool = useMemo(
+    () => [...new Set([...symbols, ...remoteSymbols])],
+    [symbols, remoteSymbols],
+  );
+
   const filteredSymbols = useMemo(() => {
     const q = search.toUpperCase();
-    return symbols.filter(sym => {
+    return symbolPool.filter(sym => {
       if (q && !sym.includes(q)) return false;
       if (isEdit && sym === initialData?.symbol) return true;
       const count = strategyCounts[sym] || 0;
@@ -133,7 +166,7 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
       }
       return true;
     });
-  }, [symbols, search, strategyCounts, strategyDirs, direction, isEdit, initialData]);
+  }, [symbolPool, search, strategyCounts, strategyDirs, direction, isEdit, initialData]);
 
   const inputClass = 'w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none';
   const labelClass = 'block text-xs text-gray-400 mb-0.5';
@@ -278,14 +311,14 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
                   })}
                   {filteredSymbols.length === 0 && (
                     <div className="px-3 py-2 text-sm text-gray-500">
-                      {symbolsLoading
+                      {symbolsLoading || remoteSearching
                         ? '加载交易对中…'
                         : symbolsError
                           ? symbolsError
-                          : symbols.length === 0
+                          : symbols.length === 0 && remoteSymbols.length === 0
                             ? '交易对列表为空，请检查网络或代理'
                             : search
-                              ? '无匹配交易对'
+                              ? '无匹配交易对（该币种可能未上架永续，或本账户该方向已占用）'
                               : '该账户交易对已全部使用'}
                     </div>
                   )}
