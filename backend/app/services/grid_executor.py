@@ -1400,6 +1400,16 @@ class GridExecutor:
             return True
         return False
 
+    @staticmethod
+    def _apply_mark_prices(positions: list, current_price: float) -> None:
+        """在 tick 末尾更新标记价，避免查询前 autoflush 触发 database is locked。"""
+        for pos in positions:
+            pos.mark_price = current_price
+            if pos.side == "long":
+                pos.unrealized_pnl = (current_price - float(pos.entry_price)) * float(pos.quantity)
+            else:
+                pos.unrealized_pnl = (float(pos.entry_price) - current_price) * float(pos.quantity)
+
     async def process_symbol(
         self, session, strategy, symbol: str, exchange, current_price: float,
     ) -> None:
@@ -1446,13 +1456,6 @@ class GridExecutor:
             await self._open_initial(session, strategy, symbol, exchange, current_price)
             return
 
-        for pos in open_positions:
-            pos.mark_price = current_price
-            if pos.side == "long":
-                pos.unrealized_pnl = (current_price - float(pos.entry_price)) * float(pos.quantity)
-            else:
-                pos.unrealized_pnl = (float(pos.entry_price) - current_price) * float(pos.quantity)
-
         tp_precheck = await self._quick_tp_fill_precheck(
             session, strategy, symbol, exchange, open_positions, current_price,
         )
@@ -1480,6 +1483,7 @@ class GridExecutor:
             strategy, symbol, exchange, open_positions, current_price,
         )
 
+        self._apply_mark_prices(open_positions, current_price)
         await _commit(positions=open_positions)
 
     async def _quick_tp_fill_precheck(

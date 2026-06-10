@@ -175,44 +175,54 @@ async def health_check():
     return {"status": "ok", "version": "0.2.0"}
 
 
+_MARKETS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_MARKETS_CACHE_TTL = 300  # seconds
+
+
 @app.get("/api/markets")
-async def get_markets(exchange: str = "binance"):
+async def get_markets(exchange: str = "binance", account_id: int | None = None):
     """Return available USDT perpetual symbols for the given exchange."""
-    from .services.exchange_factory import get_public_exchange
+    import time
+    from .services.exchange_factory import get_exchange_service, get_public_exchange
     from .services.exchange_base import BaseExchangeService
-    try:
-        ex = await get_public_exchange(exchange)
-        raw = await ex.fetch_markets()
-        if isinstance(raw, dict):
-            raw = list(raw.values())
-        symbols = []
-        seen = set()
-        for m in (raw or []):
-            if not isinstance(m, dict):
+
+    log = logging.getLogger(__name__)
+    cache_key = f"{exchange}:{account_id or 'public'}"
+    now = time.time()
+    cached = _MARKETS_CACHE.get(cache_key)
+    if cached and now - cached[0] < _MARKETS_CACHE_TTL:
+        return {"symbols": cached[1]}
+
+    errors: list[str] = []
+    sources: list[tuple[str, object]] = []
+    if account_id:
+        sources.append(("account", lambda aid=account_id: get_exchange_service(aid)))
+    sources.append(("public", lambda ex=exchange: get_public_exchange(ex)))
+
+    for label, fetcher in sources:
+        try:
+            ex = await fetcher()
+            if not ex:
                 continue
-            sym = m.get("id") or m.get("symbol") or ""
-            norm = BaseExchangeService._norm_sym(sym)
-            # USDT perpetual swap only
-            if not norm.endswith("USDT") or norm in seen:
-                continue
-            # Filter: linear perpetual contract (no expiry date)
-            mtype = m.get("type") or ""
-            linear = m.get("linear")
-            if mtype == "swap" or linear or (m.get("swap") is True):
-                seen.add(norm)
-                symbols.append(norm)
-        symbols.sort()
-        return {"symbols": symbols}
-    except Exception as e:
-        # Fallback: return hardcoded popular USDT pairs
-        logger = logging.getLogger(__name__)
-        logger.warning("Failed to fetch markets: %s, returning fallback list", e)
-        popular = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-                    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-                    "MATICUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "ETCUSDT",
-                    "OPUSDT", "ARBUSDT", "FILUSDT", "APTUSDT", "NEARUSDT",
-                    "SUIUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT", "SEIUSDT"]
-        return {"symbols": popular}
+            raw = await ex.fetch_markets()
+            symbols = BaseExchangeService.extract_usdt_perp_symbols(raw)
+            if symbols:
+                _MARKETS_CACHE[cache_key] = (now, symbols)
+                return {"symbols": symbols}
+            errors.append(f"{label}: empty market list")
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+
+    log.warning("Failed to fetch markets (%s): %s", cache_key, "; ".join(errors) or "unknown")
+    popular = [
+        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
+        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+        "UNIUSDT", "ATOMUSDT", "LTCUSDT", "ETCUSDT",
+        "OPUSDT", "ARBUSDT", "FILUSDT", "APTUSDT", "NEARUSDT",
+        "SUIUSDT", "PEPEUSDT", "WIFUSDT", "SEIUSDT", "GPSUSDT",
+        "1INCHUSDT", "AAVEUSDT", "ALGOUSDT", "APEUSDT", "ARUSDT",
+    ]
+    return {"symbols": popular}
 
 
 @app.get("/api/markets/strategy-counts")

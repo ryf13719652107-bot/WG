@@ -2,8 +2,10 @@ import asyncio
 import contextvars
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
@@ -37,6 +39,50 @@ engine = create_async_engine(
     },
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+_SQLITE_CONNECT_PRAGMAS = (
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA cache_size=-64000",
+    "PRAGMA temp_store=MEMORY",
+    "PRAGMA mmap_size=268435456",
+    "PRAGMA wal_autocheckpoint=1000",
+    "PRAGMA busy_timeout=60000",
+)
+
+
+def _apply_sqlite_pragmas(dbapi_conn, _connection_record) -> None:
+    cur = dbapi_conn.cursor()
+    for sql in _SQLITE_CONNECT_PRAGMAS:
+        try:
+            cur.execute(sql)
+        except Exception:
+            pass
+    cur.close()
+
+
+event.listens_for(engine.sync_engine, "connect")(_apply_sqlite_pragmas)
+
+T = TypeVar("T")
+
+
+async def run_with_sqlite_retry(
+    fn: Callable[[], Awaitable[T]],
+    *,
+    retries: int = 6,
+    base_delay: float = 0.05,
+) -> T:
+    """SQLite 写冲突时指数退避重试（database is locked）。"""
+    last: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            return await fn()
+        except OperationalError as e:
+            last = e
+            if "database is locked" not in str(e).lower() or attempt >= retries - 1:
+                raise
+            await asyncio.sleep(base_delay * (2 ** attempt))
+    raise last  # pragma: no cover
 
 
 class TickDbSession:
@@ -79,8 +125,10 @@ class TickDbSession:
         return strategy
 
     async def execute(self, *args, **kwargs):
-        s = await self._open()
-        return await s.execute(*args, **kwargs)
+        async def _run():
+            s = await self._open()
+            return await s.execute(*args, **kwargs)
+        return await run_with_sqlite_retry(_run)
 
     async def get(self, *args, **kwargs):
         s = await self._open()
@@ -98,8 +146,10 @@ class TickDbSession:
         return merged
 
     async def commit(self) -> None:
-        s = await self._open()
-        await s.commit()
+        async def _run():
+            s = await self._open()
+            await s.commit()
+        await run_with_sqlite_retry(_run)
         await self._close()
 
     async def rollback(self) -> None:

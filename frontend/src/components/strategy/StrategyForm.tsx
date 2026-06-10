@@ -65,6 +65,8 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
   });
 
   const [symbols, setSymbols] = useState<string[]>([]);
+  const [symbolsLoading, setSymbolsLoading] = useState(false);
+  const [symbolsError, setSymbolsError] = useState('');
   const [strategyCounts, setStrategyCounts] = useState<Record<string, number>>({});
   const [strategyDirs, setStrategyDirs] = useState<Record<string, string[]>>({});
   const [search, setSearch] = useState(initialData?.symbol || '');
@@ -88,9 +90,25 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
   const direction = watch('direction');
 
   useEffect(() => {
+    if (!selectedAccountId) {
+      setSymbols([]);
+      setSymbolsError('');
+      return;
+    }
     const acct = accounts.find(a => a.id === selectedAccountId);
-    const ex = (acct as any)?.exchange || 'binance';
-    api.getMarkets(ex).then(r => setSymbols(r.symbols)).catch(() => {});
+    const ex = acct?.exchange || 'binance';
+    setSymbolsLoading(true);
+    setSymbolsError('');
+    api.getMarkets(ex, selectedAccountId)
+      .then((r) => {
+        setSymbols(r.symbols || []);
+        if (!r.symbols?.length) setSymbolsError('未获取到交易对，请检查网络或代理');
+      })
+      .catch((e: Error) => {
+        setSymbols([]);
+        setSymbolsError(e.message || '加载交易对失败');
+      })
+      .finally(() => setSymbolsLoading(false));
   }, [selectedAccountId, accounts]);
 
   useEffect(() => {
@@ -260,7 +278,15 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
                   })}
                   {filteredSymbols.length === 0 && (
                     <div className="px-3 py-2 text-sm text-gray-500">
-                      {search ? '无匹配交易对' : '该账户交易对已全部使用'}
+                      {symbolsLoading
+                        ? '加载交易对中…'
+                        : symbolsError
+                          ? symbolsError
+                          : symbols.length === 0
+                            ? '交易对列表为空，请检查网络或代理'
+                            : search
+                              ? '无匹配交易对'
+                              : '该账户交易对已全部使用'}
                     </div>
                   )}
                 </div>

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from .database import TickDbSession
+from .database import TickDbSession, run_with_sqlite_retry
 
 
 def is_tick_session(session: Any) -> bool:
@@ -36,9 +36,9 @@ async def db_commit(
         merged = strategy
         if strategy is not None or positions:
             merged = await session.reattach(strategy, positions)
-        await session.commit()
+        await run_with_sqlite_retry(session.commit)
         return merged
-    await session.commit()
+    await run_with_sqlite_retry(session.commit)
     return strategy
 
 

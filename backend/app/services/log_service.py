@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from ..config import now_beijing
-from ..database import async_session
+from ..database import async_session, db_session, run_with_sqlite_retry
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +72,9 @@ class StrategyLogService:
             return
         batch = self._pending[:]
         self._pending = []
-        try:
-            async with async_session() as s:
+
+        async def _write():
+            async with db_session() as s:
                 conn = await s.connection()
                 for entry in batch:
                     await conn.run_sync(
@@ -83,13 +84,18 @@ class StrategyLogService:
                         )
                     )
                 await s.commit()
+
+        try:
+            await run_with_sqlite_retry(_write)
         except Exception as e:
             logger.debug("Log flush to DB failed: %s", e)
+            self._pending = batch + self._pending
 
     async def _cleanup_old(self):
         cutoff = now_beijing() - timedelta(days=LOG_RETENTION_DAYS)
-        try:
-            async with async_session() as s:
+
+        async def _run():
+            async with db_session() as s:
                 conn = await s.connection()
                 await conn.run_sync(
                     lambda c: c.exec_driver_sql(
@@ -98,6 +104,9 @@ class StrategyLogService:
                     )
                 )
                 await s.commit()
+
+        try:
+            await run_with_sqlite_retry(_run)
         except Exception as e:
             logger.debug("Log cleanup failed: %s", e)
 

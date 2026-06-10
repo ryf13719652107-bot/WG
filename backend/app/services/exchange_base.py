@@ -69,6 +69,49 @@ class BaseExchangeService(ABC):
         return s
 
     @staticmethod
+    def extract_usdt_perp_symbols(raw_markets) -> list[str]:
+        """从 ccxt load_markets 结果提取 USDT 本位永续合约符号（统一为 BTCUSDT 格式）。"""
+        if isinstance(raw_markets, dict):
+            raw_markets = list(raw_markets.values())
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for m in raw_markets or []:
+            if not isinstance(m, dict):
+                continue
+            if m.get("active") is False:
+                continue
+            sym = str(m.get("id") or m.get("symbol") or "")
+            norm = BaseExchangeService._norm_sym(sym)
+            if not norm.endswith("USDT") or len(norm) <= 4:
+                continue
+            base = norm[:-4]
+            if "_" in base:
+                continue
+            if m.get("expiry") or m.get("expiryDatetime"):
+                continue
+            quote = str(m.get("quote") or "").upper()
+            settle = str(m.get("settle") or "").upper()
+            if quote and quote not in ("USDT", "") and settle not in ("USDT", ""):
+                continue
+            if m.get("spot"):
+                continue
+            mtype = str(m.get("type") or "").lower()
+            is_perp = (
+                mtype in ("swap", "future")
+                or m.get("swap")
+                or m.get("linear")
+                or (m.get("contract") and not m.get("expiry"))
+            )
+            if not is_perp:
+                continue
+            if norm in seen:
+                continue
+            seen.add(norm)
+            symbols.append(norm)
+        symbols.sort()
+        return symbols
+
+    @staticmethod
     def avg_fill_price_from_order(raw: dict | None) -> float:
         """从 ccxt 订单 dict 解析成交均价（开仓/平仓/日志用）。
 

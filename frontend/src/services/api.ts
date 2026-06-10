@@ -165,8 +165,13 @@ export const api = {
     request<DashboardData>(`/dashboard${accountId ? `?account_id=${accountId}` : ''}`),
 
   // Markets
-  getMarkets: (exchange?: string): Promise<{ symbols: string[] }> =>
-    request(`/markets${exchange ? `?exchange=${exchange}` : ''}`),
+  getMarkets: (exchange?: string, accountId?: number): Promise<{ symbols: string[] }> => {
+    const params = new URLSearchParams();
+    if (exchange) params.set('exchange', exchange);
+    if (accountId) params.set('account_id', String(accountId));
+    const q = params.toString();
+    return request(`/markets${q ? `?${q}` : ''}`);
+  },
   getStrategyCounts: (accountId?: number): Promise<{
     counts: Record<string, number>;
     directions: Record<string, string[]>;
