@@ -153,20 +153,28 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
     [symbols, remoteSymbols],
   );
 
-  const filteredSymbols = useMemo(() => {
+  type SymbolAvailability = 'ok' | 'dir_taken' | 'full';
+
+  const symbolAvailability = (sym: string): SymbolAvailability => {
+    if (isEdit && sym === initialData?.symbol) return 'ok';
+    const count = strategyCounts[sym] || 0;
+    if (count >= 2) return 'full';
+    if (count === 1) {
+      const dirs = strategyDirs[sym] || [];
+      if (dirs.includes(direction)) return 'dir_taken';
+    }
+    return 'ok';
+  };
+
+  const matchedSymbols = useMemo(() => {
     const q = search.toUpperCase();
-    return symbolPool.filter(sym => {
-      if (q && !sym.includes(q)) return false;
-      if (isEdit && sym === initialData?.symbol) return true;
-      const count = strategyCounts[sym] || 0;
-      if (count >= 2) return false;
-      if (count === 1) {
-        const dirs = strategyDirs[sym] || [];
-        if (dirs.includes(direction)) return false;
-      }
-      return true;
-    });
-  }, [symbolPool, search, strategyCounts, strategyDirs, direction, isEdit, initialData]);
+    return symbolPool.filter((sym) => !q || sym.includes(q));
+  }, [symbolPool, search]);
+
+  const selectableSymbols = useMemo(
+    () => matchedSymbols.filter((sym) => symbolAvailability(sym) === 'ok'),
+    [matchedSymbols, strategyCounts, strategyDirs, direction, isEdit, initialData],
+  );
 
   const inputClass = 'w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none';
   const labelClass = 'block text-xs text-gray-400 mb-0.5';
@@ -284,17 +292,29 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
               />
               {showDropdown && (
                 <div className="absolute z-50 w-full mt-0.5 max-h-48 overflow-y-auto bg-gray-800 border border-gray-700 rounded shadow-lg">
-                  {filteredSymbols.slice(0, 100).map(sym => {
+                  {matchedSymbols.slice(0, 100).map(sym => {
                     const dirs = strategyDirs[sym] || [];
                     const takenLong = dirs.includes('long');
                     const takenShort = dirs.includes('short');
+                    const avail = symbolAvailability(sym);
+                    const disabled = avail !== 'ok';
+                    const reason = avail === 'full'
+                      ? '已满(删旧策略后可建)'
+                      : avail === 'dir_taken'
+                        ? `${direction === 'long' ? '多' : '空'}向已占用`
+                        : '';
                     return (
                       <div
                         key={sym}
-                        className={`px-3 py-1.5 text-sm cursor-pointer flex items-center justify-between ${
-                          selectedSymbol === sym ? 'bg-blue-600/30 text-blue-300' : 'text-gray-300 hover:bg-gray-700'
+                        className={`px-3 py-1.5 text-sm flex items-center justify-between ${
+                          disabled
+                            ? 'text-gray-500 cursor-not-allowed opacity-70'
+                            : selectedSymbol === sym
+                              ? 'bg-blue-600/30 text-blue-300 cursor-pointer'
+                              : 'text-gray-300 hover:bg-gray-700 cursor-pointer'
                         }`}
                         onMouseDown={(e) => {
+                          if (disabled) return;
                           e.preventDefault();
                           setValue('symbol', sym);
                           setSearch(sym);
@@ -302,14 +322,20 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
                         }}
                       >
                         <span className="font-mono">{sym}</span>
-                        <span className="text-xs text-gray-500">
-                          {takenLong && <span className="text-green-500 mr-1">多</span>}
-                          {takenShort && <span className="text-red-500">空</span>}
+                        <span className="text-xs text-gray-500 ml-2 shrink-0">
+                          {reason ? (
+                            <span className="text-amber-500/90">{reason}</span>
+                          ) : (
+                            <>
+                              {takenLong && <span className="text-green-500 mr-1">多</span>}
+                              {takenShort && <span className="text-red-500">空</span>}
+                            </>
+                          )}
                         </span>
                       </div>
                     );
                   })}
-                  {filteredSymbols.length === 0 && (
+                  {matchedSymbols.length === 0 && (
                     <div className="px-3 py-2 text-sm text-gray-500">
                       {symbolsLoading || remoteSearching
                         ? '加载交易对中…'
@@ -318,8 +344,13 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
                           : symbols.length === 0 && remoteSymbols.length === 0
                             ? '交易对列表为空，请检查网络或代理'
                             : search
-                              ? '无匹配交易对（该币种可能未上架永续，或本账户该方向已占用）'
-                              : '该账户交易对已全部使用'}
+                              ? '无匹配交易对（该币种可能未上架永续）'
+                              : '暂无交易对'}
+                    </div>
+                  )}
+                  {matchedSymbols.length > 0 && selectableSymbols.length === 0 && search && (
+                    <div className="px-3 py-2 text-xs text-amber-500/90 border-t border-gray-700">
+                      匹配到的币种本账户均已占用；请在策略管理中删除已停止的旧策略后再创建。
                     </div>
                   )}
                 </div>

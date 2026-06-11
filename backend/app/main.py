@@ -254,27 +254,29 @@ async def search_markets(
 
 @app.get("/api/markets/strategy-counts")
 async def get_strategy_counts(account_id: int | None = None, db=None):
-    """Return per-symbol strategy counts for the 2-per-symbol constraint."""
-    from sqlalchemy import select, func
+    """Return per-symbol strategy counts for the 2-per-symbol constraint (含已停止未删除的策略)。"""
+    from sqlalchemy import select
     from .database import async_session
     from .models.strategy import Strategy
+    from .services.exchange_base import BaseExchangeService
+
     async with async_session() as session:
-        stmt = select(Strategy.symbol, func.count(Strategy.id)).group_by(Strategy.symbol)
+        stmt = select(Strategy.symbol, Strategy.direction).where(Strategy.symbol.is_not(None))
         if account_id:
             stmt = stmt.where(Strategy.account_id == account_id)
         result = await session.execute(stmt)
-        counts = {row[0]: row[1] for row in result.all()}
-        # Also include per-direction to show which direction already exists
-        dir_stmt = select(Strategy.symbol, Strategy.direction).where(Strategy.symbol.is_not(None))
-        if account_id:
-            dir_stmt = dir_stmt.where(Strategy.account_id == account_id)
-        dir_result = await session.execute(dir_stmt)
+        counts: dict[str, int] = {}
         directions: dict[str, list[str]] = {}
-        for row in dir_result.all():
-            sym = row[0]
+        for sym_raw, dir_raw in result.all():
+            sym = BaseExchangeService._norm_sym(sym_raw or "")
+            if not sym:
+                continue
+            counts[sym] = counts.get(sym, 0) + 1
+            d = (dir_raw or "").lower()
             if sym not in directions:
                 directions[sym] = []
-            directions[sym].append(row[1])
+            if d and d not in directions[sym]:
+                directions[sym].append(d)
         return {"counts": counts, "directions": directions}
 
 
