@@ -59,7 +59,7 @@ function toFormDefaults(accounts: Account[], initial?: Strategy | null): Strateg
 }
 
 export default function StrategyForm({ accounts, initialData, onSubmit, onCancel }: Props) {
-  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<StrategyFormData>({
+  const { register, handleSubmit, watch, setValue, getValues, formState: { errors } } = useForm<StrategyFormData>({
     resolver: zodResolver(schema),
     defaultValues: toFormDefaults(accounts, initialData),
   });
@@ -91,8 +91,17 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
   const selectedSymbol = watch('symbol');
   const direction = watch('direction');
 
+  // 表单挂载时 accounts 可能尚未加载，defaultValues 会为 0，导致不拉交易对
   useEffect(() => {
-    if (!selectedAccountId) {
+    if (isEdit || accounts.length === 0) return;
+    const cur = getValues('account_id');
+    if (!cur || cur < 1) {
+      setValue('account_id', accounts[0].id, { shouldValidate: true });
+    }
+  }, [accounts, isEdit, setValue, getValues]);
+
+  useEffect(() => {
+    if (!selectedAccountId || selectedAccountId < 1) {
       setSymbols([]);
       setSymbolsError('');
       return;

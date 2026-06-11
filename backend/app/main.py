@@ -203,6 +203,7 @@ async def get_markets(exchange: str = "binance", account_id: int | None = None):
         try:
             ex = await fetcher()
             if not ex:
+                errors.append(f"{label}: exchange service None")
                 continue
             symbols = await ex.list_usdt_perp_symbols()
             if symbols:
