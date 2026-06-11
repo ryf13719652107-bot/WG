@@ -214,15 +214,13 @@ async def get_markets(exchange: str = "binance", account_id: int | None = None):
             errors.append(f"{label}: {e}")
 
     log.warning("Failed to fetch markets (%s): %s", cache_key, "; ".join(errors) or "unknown")
-    popular = [
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
-        "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
-        "UNIUSDT", "ATOMUSDT", "LTCUSDT", "ETCUSDT",
-        "OPUSDT", "ARBUSDT", "FILUSDT", "APTUSDT", "NEARUSDT",
-        "SUIUSDT", "PEPEUSDT", "WIFUSDT", "SEIUSDT", "GPSUSDT",
-        "1INCHUSDT", "AAVEUSDT", "ALGOUSDT", "APEUSDT", "ARUSDT",
-    ]
-    return {"symbols": popular}
+    from .services.market_symbols import FALLBACK_USDT_PERP, fetch_perp_symbols_http
+
+    http_syms = await fetch_perp_symbols_http(exchange)
+    if http_syms:
+        _MARKETS_CACHE[cache_key] = (now, http_syms)
+        return {"symbols": http_syms}
+    return {"symbols": FALLBACK_USDT_PERP}
 
 
 @app.get("/api/markets/search")
@@ -233,6 +231,11 @@ async def search_markets(
 ):
     """按关键字搜索 USDT 永续（本地列表未命中时前端补查）。"""
     from .services.exchange_factory import get_exchange_service, get_public_exchange
+    from .services.market_symbols import (
+        FALLBACK_USDT_PERP,
+        fetch_perp_symbols_http,
+        filter_symbols_by_query,
+    )
 
     log = logging.getLogger(__name__)
     sources: list = []
@@ -250,6 +253,17 @@ async def search_markets(
                 return {"symbols": symbols}
         except Exception as e:
             log.debug("search_markets %s: %s", q, e)
+
+    pool: set[str] = set(FALLBACK_USDT_PERP)
+    for key, (_, syms) in _MARKETS_CACHE.items():
+        if exchange in key:
+            pool.update(syms)
+    http_syms = await fetch_perp_symbols_http(exchange)
+    pool.update(http_syms)
+    filtered = filter_symbols_by_query(q, sorted(pool), limit=50)
+    if filtered:
+        return {"symbols": filtered}
+    log.debug("search_markets %s: no match in pool size %d", q, len(pool))
     return {"symbols": []}
 
 

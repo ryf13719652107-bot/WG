@@ -140,8 +140,7 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
     }
     const timer = setTimeout(() => {
       const qq = q.toUpperCase();
-      const hasLocal = symbols.some((sym) => sym.includes(qq));
-      if (hasLocal) {
+      if (symbols.some((sym) => sym.includes(qq))) {
         setRemoteSymbols([]);
         setRemoteSearching(false);
         return;
@@ -153,7 +152,7 @@ export default function StrategyForm({ accounts, initialData, onSubmit, onCancel
         .then((r) => setRemoteSymbols(r.symbols || []))
         .catch(() => setRemoteSymbols([]))
         .finally(() => setRemoteSearching(false));
-    }, 350);
+    }, 250);
     return () => clearTimeout(timer);
   }, [search, symbols, selectedAccountId, accounts]);
 
