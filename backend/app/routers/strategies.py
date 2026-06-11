@@ -25,6 +25,9 @@ from ..schemas.strategy import (
 from ..services.scheduler import strategy_scheduler
 from ..services.exchange_factory import get_exchange_service, clear_all_cache
 from ..services.exchange_base import BaseExchangeService
+from ..services.log_service import strategy_log_service
+from ..services.order_tracker import order_tracker
+from ..services.health_monitor import health_monitor
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
@@ -657,6 +660,15 @@ async def update_strategy(
     return StrategyResponse.model_validate(strategy)
 
 
+async def _purge_strategy_records(strategy_id: int, db: AsyncSession) -> None:
+    """删除策略关联的交易、持仓、日志与内存缓存。"""
+    await db.execute(sql_delete(Trade).where(Trade.strategy_id == strategy_id))
+    await db.execute(sql_delete(Position).where(Position.strategy_id == strategy_id))
+    await strategy_log_service.purge_strategy(strategy_id)
+    order_tracker.clear_strategy(strategy_id)
+    health_monitor.clear_strategy(strategy_id)
+
+
 @router.delete("/{strategy_id}", status_code=204)
 async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     strategy = await db.get(Strategy, strategy_id)
@@ -679,8 +691,7 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
         close_reason="strategy_deleted",
         use_order_tracker=not was_running,
     )
-    # 平仓记录已写入 trades；删除持仓行，避免仅存 closed_at 脏数据
-    await db.execute(sql_delete(Position).where(Position.strategy_id == strategy_id))
+    await _purge_strategy_records(strategy_id, db)
     await db.delete(strategy)
     await db.commit()
 
