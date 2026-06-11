@@ -125,10 +125,19 @@ class TickDbSession:
         return strategy
 
     async def execute(self, *args, **kwargs):
-        async def _run():
-            s = await self._open()
-            return await s.execute(*args, **kwargs)
-        return await run_with_sqlite_retry(_run)
+        last: Optional[Exception] = None
+        for attempt in range(6):
+            try:
+                s = await self._open()
+                return await s.execute(*args, **kwargs)
+            except OperationalError as e:
+                last = e
+                await self.rollback()
+                if "database is locked" not in str(e).lower() or attempt >= 5:
+                    raise
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        if last:
+            raise last
 
     async def get(self, *args, **kwargs):
         s = await self._open()
@@ -146,11 +155,21 @@ class TickDbSession:
         return merged
 
     async def commit(self) -> None:
-        async def _run():
-            s = await self._open()
-            await s.commit()
-        await run_with_sqlite_retry(_run)
-        await self._close()
+        last: Optional[Exception] = None
+        for attempt in range(6):
+            try:
+                s = await self._open()
+                await s.commit()
+                await self._close()
+                return
+            except OperationalError as e:
+                last = e
+                await self.rollback()
+                if "database is locked" not in str(e).lower() or attempt >= 5:
+                    raise
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        if last:
+            raise last
 
     async def rollback(self) -> None:
         try:

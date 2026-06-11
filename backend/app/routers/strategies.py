@@ -299,6 +299,7 @@ async def _flatten_strategy_orders_and_positions(
 
     now = now_beijing()
     qty_for_report = close_qty if close_qty > 1e-12 else (exchange_qty if exchange_qty > 1e-12 else total_qty)
+    write_trades = close_reason != "strategy_deleted"
 
     # 交易所未确认平仓时勿关本地持仓，避免「界面已平、所里仍有仓」
     if close_success:
@@ -314,23 +315,24 @@ async def _flatten_strategy_orders_and_positions(
                 if p_ep > 0
                 else 0
             )
-            trade = Trade(
-                strategy_id=p.strategy_id,
-                account_id=strategy.account_id,
-                symbol=p.symbol,
-                side=p.side,
-                quantity=p_qty,
-                entry_price=p_ep,
-                exit_price=ep,
-                realized_pnl=pnl,
-                pnl_pct=round(pct, 2),
-                entry_time=p.opened_at or now,
-                exit_time=now,
-                layer=p.layer,
-                grid_level=p.grid_level if hasattr(p, "grid_level") else 0,
-                close_reason=close_reason,
-            )
-            db.add(trade)
+            if write_trades:
+                trade = Trade(
+                    strategy_id=p.strategy_id,
+                    account_id=strategy.account_id,
+                    symbol=p.symbol,
+                    side=p.side,
+                    quantity=p_qty,
+                    entry_price=p_ep,
+                    exit_price=ep,
+                    realized_pnl=pnl,
+                    pnl_pct=round(pct, 2),
+                    entry_time=p.opened_at or now,
+                    exit_time=now,
+                    layer=p.layer,
+                    grid_level=p.grid_level if hasattr(p, "grid_level") else 0,
+                    close_reason=close_reason,
+                )
+                db.add(trade)
             p.closed_at = now
     elif has_position_hint and close_reason == "panic_close":
         strategy_log_service.warning(
@@ -338,7 +340,7 @@ async def _flatten_strategy_orders_and_positions(
             "紧急平仓: 交易所未确认平仓，本地持仓记录保持不变，请重试或到交易所手动平仓",
         )
 
-    if not positions and close_success and qty_for_report > 1e-12 and exit_price > 0:
+    if write_trades and not positions and close_success and qty_for_report > 1e-12 and exit_price > 0:
         ep_in = ex_avg_entry if ex_avg_entry > 0 else exit_price
         qty0 = qty_for_report
         is_long = direction.lower() == "long"
@@ -402,6 +404,7 @@ async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_d
 
     payload = data.model_dump()
     payload["base_qty_type"] = "usdt"
+    payload["symbol"] = norm_sym
     # 旧库 NOT NULL 遗留列（模型保留默认值，业务已废弃）
     payload.setdefault("stop_loss_close_pct", 100.0)
     strategy = Strategy(**payload)
@@ -661,10 +664,17 @@ async def update_strategy(
 
 
 async def _purge_strategy_records(strategy_id: int, db: AsyncSession) -> None:
-    """删除策略关联的交易、持仓、日志与内存缓存。"""
+    """删除策略关联的交易、持仓、日志与内存缓存（与策略删除同一事务）。"""
     await db.execute(sql_delete(Trade).where(Trade.strategy_id == strategy_id))
     await db.execute(sql_delete(Position).where(Position.strategy_id == strategy_id))
-    await strategy_log_service.purge_strategy(strategy_id)
+    conn = await db.connection()
+    await conn.run_sync(
+        lambda c, sid=strategy_id: c.exec_driver_sql(
+            "DELETE FROM strategy_logs WHERE strategy_id = ?",
+            (sid,),
+        )
+    )
+    strategy_log_service.purge_strategy_memory(strategy_id)
     order_tracker.clear_strategy(strategy_id)
     health_monitor.clear_strategy(strategy_id)
 
@@ -675,22 +685,38 @@ async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db)):
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
-    if not await get_exchange_service(strategy.account_id):
-        raise HTTPException(status_code=502, detail="Exchange service not available")
+    open_pos = await db.execute(
+        select(Position).where(
+            Position.strategy_id == strategy_id,
+            Position.closed_at.is_(None),
+        )
+    )
+    has_open = open_pos.scalars().first() is not None
+    exchange = await get_exchange_service(strategy.account_id)
 
     was_running = strategy.status == "running"
     if was_running:
+        if not exchange:
+            raise HTTPException(status_code=502, detail="策略运行中但无法连接交易所，请先停止或恢复网络")
         await strategy_scheduler.remove_strategy(strategy_id)
         strategy = await db.get(Strategy, strategy_id)
         if not strategy:
             raise HTTPException(status_code=404, detail="Strategy not found")
 
-    await _flatten_strategy_orders_and_positions(
-        strategy,
-        db,
-        close_reason="strategy_deleted",
-        use_order_tracker=not was_running,
-    )
+    if has_open and not exchange:
+        raise HTTPException(
+            status_code=502,
+            detail="该策略仍有未平持仓记录但无法连接交易所，请恢复网络后再删除",
+        )
+
+    if exchange:
+        await _flatten_strategy_orders_and_positions(
+            strategy,
+            db,
+            close_reason="strategy_deleted",
+            use_order_tracker=not was_running,
+        )
+
     await _purge_strategy_records(strategy_id, db)
     await db.delete(strategy)
     await db.commit()

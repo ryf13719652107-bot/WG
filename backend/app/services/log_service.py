@@ -151,26 +151,10 @@ class StrategyLogService:
     def clear(self, strategy_id: int):
         self._buffers.pop(strategy_id, None)
 
-    async def purge_strategy(self, strategy_id: int) -> None:
-        """删除策略时清理内存缓冲、待落库队列与 SQLite 持久化日志。"""
+    def purge_strategy_memory(self, strategy_id: int) -> None:
+        """删除策略时清理内存缓冲与待落库队列（不涉及 DB 事务）。"""
         self._buffers.pop(strategy_id, None)
         self._pending = [e for e in self._pending if e.get("strategy_id") != strategy_id]
-
-        async def _delete_rows():
-            async with db_session() as s:
-                conn = await s.connection()
-                await conn.run_sync(
-                    lambda c, sid=strategy_id: c.exec_driver_sql(
-                        "DELETE FROM strategy_logs WHERE strategy_id = ?",
-                        (sid,),
-                    )
-                )
-                await s.commit()
-
-        try:
-            await run_with_sqlite_retry(_delete_rows)
-        except Exception as e:
-            logger.debug("purge_strategy logs strategy=%d: %s", strategy_id, e)
 
 
 # Singleton

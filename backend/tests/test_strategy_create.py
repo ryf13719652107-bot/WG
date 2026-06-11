@@ -2,6 +2,7 @@
 from app.models.strategy import Strategy
 from app.schemas.strategy import StrategyCreate, StrategyResponse
 from app.config import now_beijing
+from app.services.exchange_base import BaseExchangeService
 
 
 def test_strategy_create_payload_merge():
@@ -50,3 +51,10 @@ def test_strategy_response_nullable_fields():
     })
     assert resp.base_qty_type == "usdt"
     assert resp.reopen_after_close is True
+
+
+def test_create_symbol_normalized():
+  """创建策略应统一存 LABUSDT 格式，避免与策略计数键不一致。"""
+  raw = "LAB/USDT:USDT"
+  norm = BaseExchangeService._norm_sym(raw)
+  assert norm == "LABUSDT"
