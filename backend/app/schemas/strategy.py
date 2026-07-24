@@ -146,6 +146,12 @@ class DeclineRankAutoStatus(BaseModel):
     last_refresh_at: Optional[str] = None
     next_refresh_at: Optional[str] = None
     current_symbols: list[str] = Field(default_factory=list)
+    active_symbols: list[str] = Field(default_factory=list, description="已创建的自动策略币种")
     auto_strategy_count: int = 0
     last_error: Optional[str] = None
     cleaned_for_window: Optional[str] = None
+    last_ranked_count: int = 0
+    last_created: int = 0
+    last_skipped: int = 0
+    last_failed: int = 0
+    last_skip_reasons: list[str] = Field(default_factory=list)

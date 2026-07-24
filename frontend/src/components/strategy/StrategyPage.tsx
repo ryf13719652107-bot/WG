@@ -276,8 +276,22 @@ export default function StrategyPage() {
                 上次刷新：{autoStatus?.last_refresh_at || '尚未刷新'}
                 {autoStatus?.next_refresh_at ? ` · 下次：${autoStatus.next_refresh_at}` : ''}
               </div>
+              {(autoStatus?.last_ranked_count || 0) > 0 && (
+                <div className="text-xs text-gray-500">
+                  最近一次榜单 {autoStatus?.last_ranked_count} 个币
+                  {' · '}新建 {autoStatus?.last_created ?? 0}
+                  {' · '}跳过 {autoStatus?.last_skipped ?? 0}
+                  {' · '}失败 {autoStatus?.last_failed ?? 0}
+                  {(autoStatus?.last_skipped || 0) > 0 && '（跳过=同币同向已有策略，不会重复开）'}
+                </div>
+              )}
               {autoStatus?.last_error && (
                 <div className="text-xs text-amber-300">最近错误：{autoStatus.last_error}</div>
+              )}
+              {(autoStatus?.last_skip_reasons?.length || 0) > 0 && (
+                <div className="text-xs text-gray-500 break-all">
+                  跳过原因：{autoStatus?.last_skip_reasons?.slice(0, 5).join('；')}
+                </div>
               )}
             </div>
             <div className="flex flex-wrap gap-2 shrink-0">

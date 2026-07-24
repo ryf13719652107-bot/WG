@@ -18,9 +18,15 @@ export interface DeclineRankAutoStatus {
   last_refresh_at: string | null;
   next_refresh_at: string | null;
   current_symbols: string[];
+  active_symbols?: string[];
   auto_strategy_count: number;
   last_error: string | null;
   cleaned_for_window: string | null;
+  last_ranked_count?: number;
+  last_created?: number;
+  last_skipped?: number;
+  last_failed?: number;
+  last_skip_reasons?: string[];
 }
 
 export const defaultDeclineRankParams = (): StrategyParamFields => ({

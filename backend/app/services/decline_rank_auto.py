@@ -105,7 +105,13 @@ async def load_config(db: AsyncSession) -> DeclineRankAutoConfig:
         return default_config()
 
 
-async def save_config(db: AsyncSession, config: DeclineRankAutoConfig) -> DeclineRankAutoConfig:
+async def save_config(
+    db: AsyncSession,
+    config: DeclineRankAutoConfig,
+    *,
+    cleanup_on_disable: bool = False,
+) -> DeclineRankAutoConfig:
+    prev = await load_config(db)
     if config.enabled:
         if not config.account_id:
             raise ValueError("启用自动策略时必须选择账户")
@@ -120,6 +126,27 @@ async def save_config(db: AsyncSession, config: DeclineRankAutoConfig) -> Declin
     else:
         db.add(BotConfig(key=CONFIG_KEY, value=payload))
     await db.commit()
+
+    # 关闭启用时可选立即清理（走 PUT，避免旧进程无 POST /pause 导致 405）
+    if cleanup_on_disable and prev.enabled and not config.enabled:
+        aid = prev.account_id or config.account_id
+        if aid:
+            stats = await cleanup_auto_strategies(
+                db, int(aid), close_reason="decline_rank_paused",
+            )
+            state = await _load_state(db)
+            state["current_symbols"] = []
+            if not stats.get("failed"):
+                state["last_error"] = None
+                state["cleaned_for_window"] = window_id_for(
+                    now_beijing(), config.start_time or prev.start_time, config.end_time or prev.end_time,
+                )
+            else:
+                state["last_error"] = (
+                    f"暂停清理失败 {stats['failed']}: "
+                    f"{';'.join(stats.get('errors') or [])}"
+                )
+            await _save_state(db, state)
     return config
 
 
@@ -196,6 +223,17 @@ async def get_status(db: AsyncSession) -> DeclineRankAutoStatus:
         next_refresh = "立即"
 
     auto_count = await count_auto_strategies(db, config.account_id)
+    stats = state.get("last_refresh_stats") if isinstance(state.get("last_refresh_stats"), dict) else {}
+    active_syms: list[str] = []
+    if config.account_id:
+        rows = await db.execute(
+            select(Strategy.symbol).where(
+                Strategy.account_id == config.account_id,
+                Strategy.source == SOURCE_DECLINE_RANK,
+            )
+        )
+        active_syms = [str(r[0]) for r in rows.all() if r[0]]
+        active_syms.sort()
     return DeclineRankAutoStatus(
         enabled=config.enabled,
         in_window=in_win,
@@ -203,9 +241,15 @@ async def get_status(db: AsyncSession) -> DeclineRankAutoStatus:
         last_refresh_at=last_refresh,
         next_refresh_at=next_refresh,
         current_symbols=list(state.get("current_symbols") or []),
+        active_symbols=active_syms,
         auto_strategy_count=auto_count,
         last_error=state.get("last_error"),
         cleaned_for_window=state.get("cleaned_for_window"),
+        last_ranked_count=int(stats.get("ranked") or 0),
+        last_created=int(stats.get("created") or 0),
+        last_skipped=int(stats.get("skipped") or 0),
+        last_failed=int(stats.get("failed") or 0),
+        last_skip_reasons=list(stats.get("skip_reasons") or [])[:20],
     )
 
 
@@ -262,6 +306,7 @@ async def _create_and_start_from_rank(
         }
 
     from .scheduler import strategy_scheduler
+    skip_reasons: list[str] = []
 
     for sym in symbols:
         existing = await find_existing_symbol_direction(db, account_id, sym, direction)
@@ -285,6 +330,10 @@ async def _create_and_start_from_rank(
                     errors.append(f"{sym}: 已有策略但启动失败")
             else:
                 skipped += 1
+                src = getattr(existing, "source", None) or "manual"
+                skip_reasons.append(
+                    f"{sym}: 已有同向策略(ID={existing.id},source={src},status={existing.status})"
+                )
             continue
         try:
             data = StrategyCreate(
@@ -317,6 +366,7 @@ async def _create_and_start_from_rank(
         except StrategyLifecycleError as e:
             if e.code == "conflict":
                 skipped += 1
+                skip_reasons.append(f"{sym}: {e.message}")
             else:
                 failed += 1
                 errors.append(f"{sym}: {e.message}")
@@ -328,7 +378,13 @@ async def _create_and_start_from_rank(
                 await db.rollback()
             except Exception:
                 pass
-    return {"created": created, "skipped": skipped, "failed": failed, "errors": errors[:20]}
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "errors": errors[:20],
+        "skip_reasons": skip_reasons[:20],
+    }
 
 
 async def refresh_once(db: AsyncSession, config: Optional[DeclineRankAutoConfig] = None) -> dict:
@@ -350,9 +406,23 @@ async def refresh_once(db: AsyncSession, config: Optional[DeclineRankAutoConfig]
     now = now_beijing()
     state["last_refresh_at"] = now.isoformat(sep=" ", timespec="seconds")
     state["current_symbols"] = symbols
+    state["last_refresh_stats"] = {
+        "ranked": len(symbols),
+        "created": create_stats.get("created", 0),
+        "skipped": create_stats.get("skipped", 0),
+        "failed": create_stats.get("failed", 0),
+        "errors": list(create_stats.get("errors") or [])[:20],
+        "skip_reasons": list(create_stats.get("skip_reasons") or [])[:20],
+    }
     state["last_error"] = None
+    err_parts = []
     if create_stats.get("errors"):
-        state["last_error"] = "; ".join(create_stats["errors"][:3])
+        err_parts.extend(create_stats["errors"][:3])
+    if create_stats.get("skip_reasons") and create_stats.get("skipped"):
+        # 仅当有失败时把跳过也写入 last_error 易混淆；跳过单独展示
+        pass
+    if err_parts:
+        state["last_error"] = "; ".join(err_parts)
     state["active_window_id"] = window_id_for(now, config.start_time, config.end_time)
     await _save_state(db, state)
     return {"ok": True, "symbols": symbols, **create_stats}

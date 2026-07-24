@@ -397,11 +397,20 @@ async def get_decline_rank_config(db: AsyncSession = Depends(get_db)):
 
 
 @app.put("/api/bot/decline-rank-config", response_model=DeclineRankAutoConfig)
-async def put_decline_rank_config(body: DeclineRankAutoConfig, db: AsyncSession = Depends(get_db)):
+async def put_decline_rank_config(
+    body: DeclineRankAutoConfig,
+    cleanup: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """保存配置。cleanup=true 且关闭启用时，会立即清理已创建的自动策略。"""
     from fastapi import HTTPException
     from .services.decline_rank_auto import save_config
     try:
-        return await save_config(db, body)
+        return await save_config(
+            db,
+            body,
+            cleanup_on_disable=bool(cleanup) and (not body.enabled),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -413,8 +422,9 @@ async def get_decline_rank_status(db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/bot/decline-rank-refresh")
+@app.put("/api/bot/decline-rank-refresh")
 async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
-    """手动触发一次跌幅榜刷新（启用后即可建仓；窗口外仅拉榜不建仓也可用于自检）。"""
+    """手动触发一次跌幅榜刷新。"""
     from fastapi import HTTPException
     from .services.decline_rank_auto import load_config, refresh_once, is_in_window
     from .config import now_beijing
@@ -435,6 +445,7 @@ async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/bot/decline-rank-pause")
+@app.put("/api/bot/decline-rank-pause")
 async def post_decline_rank_pause(cleanup: bool = True):
     """暂停自动策略：关闭启用开关；默认立即撤单平仓并删除已创建的自动策略。"""
     from .services.decline_rank_auto import pause_auto

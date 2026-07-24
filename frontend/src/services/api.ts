@@ -228,6 +228,25 @@ export const api = {
   refreshDeclineRank: (): Promise<Record<string, unknown>> =>
     request('/bot/decline-rank-refresh', { method: 'POST' }),
 
-  pauseDeclineRank: (cleanup = true): Promise<Record<string, unknown>> =>
-    request(`/bot/decline-rank-pause?cleanup=${cleanup ? 'true' : 'false'}`, { method: 'POST' }),
+  /** 暂停：优先 POST /pause；若 405（旧后端未加载路由）则回退 PUT config + cleanup */
+  pauseDeclineRank: async (cleanup = true): Promise<Record<string, unknown>> => {
+    try {
+      return await request(`/bot/decline-rank-pause?cleanup=${cleanup ? 'true' : 'false'}`, {
+        method: 'POST',
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/405|Method Not Allowed|非 JSON|网页而非 JSON/i.test(msg)) {
+        throw e;
+      }
+      const cfg = await request<import('../types/declineRank').DeclineRankAutoConfig>(
+        '/bot/decline-rank-config',
+      );
+      await request('/bot/decline-rank-config?cleanup=true', {
+        method: 'PUT',
+        body: JSON.stringify({ ...cfg, enabled: false }),
+      });
+      return { enabled: false, cleanup, via: 'put-config-fallback' };
+    }
+  },
 };
