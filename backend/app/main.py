@@ -414,20 +414,31 @@ async def get_decline_rank_status(db: AsyncSession = Depends(get_db)):
 
 @app.post("/api/bot/decline-rank-refresh")
 async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
-    """手动触发一次跌幅榜刷新（仅在启用且窗口内时真正建仓；测试可用）。"""
+    """手动触发一次跌幅榜刷新（启用后即可建仓；窗口外仅拉榜不建仓也可用于自检）。"""
+    from fastapi import HTTPException
     from .services.decline_rank_auto import load_config, refresh_once, is_in_window
     from .config import now_beijing
 
     config = await load_config(db)
     if not config.enabled:
-        return JSONResponse(status_code=400, content={"detail": "跌幅榜自动策略未启用"})
+        raise HTTPException(status_code=400, detail="跌幅榜自动策略未启用")
     if not config.account_id:
-        return JSONResponse(status_code=400, content={"detail": "未绑定账户"})
+        raise HTTPException(status_code=400, detail="未绑定账户")
+    in_win = is_in_window(now_beijing(), config.start_time, config.end_time)
+    if not in_win:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前不在运行窗口（{config.start_time}–{config.end_time}），无法建仓。可改时间窗口或等到开始时间。",
+        )
     result = await refresh_once(db, config)
-    return {
-        "in_window": is_in_window(now_beijing(), config.start_time, config.end_time),
-        **result,
-    }
+    return {"in_window": True, **result}
+
+
+@app.post("/api/bot/decline-rank-pause")
+async def post_decline_rank_pause(cleanup: bool = True):
+    """暂停自动策略：关闭启用开关；默认立即撤单平仓并删除已创建的自动策略。"""
+    from .services.decline_rank_auto import pause_auto
+    return await pause_auto(cleanup=cleanup)
 
 
 # ---- SPA fallback: must be LAST after all API routes ----

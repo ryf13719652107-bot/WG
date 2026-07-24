@@ -437,6 +437,34 @@ async def tick() -> None:
                     pass
 
 
+async def pause_auto(*, cleanup: bool = True) -> dict:
+    """Disable auto mode; optionally teardown all decline_rank strategies immediately."""
+    async with async_session() as db:
+        config = await load_config(db)
+        account_id = config.account_id
+        config.enabled = False
+        await save_config(db, config)
+        cleanup_stats = {"deleted": 0, "failed": 0, "total": 0, "errors": []}
+        if cleanup and account_id:
+            cleanup_stats = await cleanup_auto_strategies(
+                db, int(account_id), close_reason="decline_rank_paused",
+            )
+            state = await _load_state(db)
+            state["current_symbols"] = []
+            if not cleanup_stats.get("failed"):
+                state["last_error"] = None
+                state["cleaned_for_window"] = window_id_for(
+                    now_beijing(), config.start_time, config.end_time,
+                )
+            else:
+                state["last_error"] = (
+                    f"暂停清理失败 {cleanup_stats['failed']}: "
+                    f"{';'.join(cleanup_stats.get('errors') or [])}"
+                )
+            await _save_state(db, state)
+        return {"enabled": False, "cleanup": cleanup, **cleanup_stats}
+
+
 # singleton-style export for scheduler
 async def decline_rank_auto_tick() -> None:
     await tick()

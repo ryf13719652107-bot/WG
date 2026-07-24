@@ -227,4 +227,7 @@ export const api = {
 
   refreshDeclineRank: (): Promise<Record<string, unknown>> =>
     request('/bot/decline-rank-refresh', { method: 'POST' }),
+
+  pauseDeclineRank: (cleanup = true): Promise<Record<string, unknown>> =>
+    request(`/bot/decline-rank-pause?cleanup=${cleanup ? 'true' : 'false'}`, { method: 'POST' }),
 };

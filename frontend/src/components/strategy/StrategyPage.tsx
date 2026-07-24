@@ -4,9 +4,10 @@ import { api } from '../../services/api';
 import { useDashboardStore } from '../../store/dashboardStore';
 import type { Strategy } from '../../types/strategy';
 import type { Account } from '../../types';
+import type { DeclineRankAutoStatus } from '../../types/declineRank';
 import StrategyForm from './StrategyForm';
 import DeclineRankAutoForm from './DeclineRankAutoForm';
-import { Play, Square, AlertTriangle, Trash2, Plus, Eye, Edit3, Hand, TrendingDown } from 'lucide-react';
+import { Play, Square, AlertTriangle, Trash2, Plus, Eye, Edit3, Hand, TrendingDown, Pause, RefreshCw } from 'lucide-react';
 
 type CreateMode = null | 'choose' | 'manual' | 'auto';
 
@@ -16,7 +17,18 @@ export default function StrategyPage() {
   const [createMode, setCreateMode] = useState<CreateMode>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState<'start' | 'stop' | 'panic' | null>(null);
+  const [autoStatus, setAutoStatus] = useState<DeclineRankAutoStatus | null>(null);
+  const [autoBusy, setAutoBusy] = useState<'pause' | 'refresh' | null>(null);
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
+
+  const loadAutoStatus = async () => {
+    try {
+      const st = await api.getDeclineRankStatus();
+      setAutoStatus(st);
+    } catch {
+      setAutoStatus(null);
+    }
+  };
 
   const load = async () => {
     try {
@@ -28,13 +40,54 @@ export default function StrategyPage() {
       setAccounts(a);
     } catch {
     }
+    await loadAutoStatus();
   };
 
   useEffect(() => { load(); }, [selectedAccountId]);
 
+  useEffect(() => {
+    if (!autoStatus?.enabled) return;
+    const t = setInterval(() => { void load(); }, 30000);
+    return () => clearInterval(t);
+  }, [autoStatus?.enabled, selectedAccountId]);
+
   const closeCreate = () => {
     setCreateMode(null);
     setEditingId(null);
+  };
+
+  const handlePauseAuto = async () => {
+    const n = autoStatus?.auto_strategy_count ?? 0;
+    const msg = n > 0
+      ? `确认暂停跌幅榜自动策略？将关闭自动模式，并对已创建的 ${n} 个自动策略执行撤单+市价平仓+删除。手动策略不受影响。`
+      : '确认暂停跌幅榜自动策略？将关闭自动模式，不再按跌幅榜建仓。';
+    if (!confirm(msg)) return;
+    setAutoBusy('pause');
+    try {
+      await api.pauseDeclineRank(true);
+      alert('已暂停自动策略');
+      closeCreate();
+      await load();
+    } catch (e: unknown) {
+      alert('暂停失败: ' + (e instanceof Error ? e.message : String(e)));
+    }
+    setAutoBusy(null);
+  };
+
+  const handleRefreshAuto = async () => {
+    setAutoBusy('refresh');
+    try {
+      const r = await api.refreshDeclineRank();
+      const created = Number(r.created ?? 0);
+      const skipped = Number(r.skipped ?? 0);
+      const failed = Number(r.failed ?? 0);
+      alert(`刷新完成：新建 ${created}，跳过 ${skipped}，失败 ${failed}`);
+      await load();
+    } catch (e: unknown) {
+      alert('刷新失败: ' + (e instanceof Error ? e.message : String(e)));
+      await loadAutoStatus();
+    }
+    setAutoBusy(null);
   };
 
   const handleStart = async (id: number) => {
@@ -162,6 +215,63 @@ export default function StrategyPage() {
         </button>
       </div>
 
+      {autoStatus?.enabled && (
+        <div className="bg-cyan-950/40 border border-cyan-800/60 rounded-lg p-3 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm text-cyan-100 flex items-center gap-2">
+              <TrendingDown size={16} className="text-cyan-400 shrink-0" />
+              <span>
+                跌幅榜自动策略已启用
+                {' · '}
+                {autoStatus.in_window ? '运行窗口内' : '等待下一窗口'}
+                {' · '}自动策略 {autoStatus.auto_strategy_count} 个
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={autoBusy !== null}
+                onClick={() => { setCreateMode('auto'); setEditingId(null); }}
+                className="px-2.5 py-1 text-xs rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-50"
+              >
+                编辑配置
+              </button>
+              <button
+                type="button"
+                disabled={autoBusy !== null || !autoStatus.in_window}
+                onClick={() => void handleRefreshAuto()}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-50"
+                title={!autoStatus.in_window ? '当前不在运行窗口' : '立即拉榜并建仓'}
+              >
+                <RefreshCw size={12} />
+                {autoBusy === 'refresh' ? '刷新中…' : '立即刷新建仓'}
+              </button>
+              <button
+                type="button"
+                disabled={autoBusy !== null}
+                onClick={() => void handlePauseAuto()}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50"
+              >
+                <Pause size={12} />
+                {autoBusy === 'pause' ? '暂停中…' : '暂停自动'}
+              </button>
+            </div>
+          </div>
+          <div className="text-xs text-cyan-200/70">
+            上次刷新：{autoStatus.last_refresh_at || '尚未刷新'}
+            {autoStatus.next_refresh_at ? ` · 下次：${autoStatus.next_refresh_at}` : ''}
+            {!autoStatus.in_window && ' · 到开始时间后才会自动建仓；卡片出现在下方列表'}
+            {autoStatus.in_window && autoStatus.auto_strategy_count === 0 && ' · 可点「立即刷新建仓」；也可等待约 1 分钟调度；需顶栏总开关为「运行中」'}
+          </div>
+          {autoStatus.last_error && (
+            <div className="text-xs text-amber-300">最近错误：{autoStatus.last_error}</div>
+          )}
+          {autoStatus.current_symbols?.length > 0 && (
+            <div className="text-xs text-gray-500 break-all">当前榜：{autoStatus.current_symbols.join(', ')}</div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <button
           type="button"
@@ -245,7 +355,15 @@ export default function StrategyPage() {
         <DeclineRankAutoForm
           accounts={accounts}
           onCancel={closeCreate}
-          onSaved={() => load()}
+          onSaved={async () => {
+            await load();
+            try {
+              await api.refreshDeclineRank();
+              await load();
+            } catch {
+              // 窗口外或总开关关闭时刷新会失败，状态条会提示
+            }
+          }}
         />
       )}
 
