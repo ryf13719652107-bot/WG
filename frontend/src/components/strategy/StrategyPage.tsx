@@ -220,6 +220,11 @@ export default function StrategyPage() {
                 }`}>
                   {s.status === 'running' ? '运行中' : s.status === 'error' ? '异常' : '已停止'}
                 </span>
+                {s.source === 'decline_rank' && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-cyan-600/20 text-cyan-400">
+                    跌幅榜自动
+                  </span>
+                )}
               </div>
             </div>
 

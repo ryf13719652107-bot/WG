@@ -14,15 +14,18 @@ def test_strategy_create_payload_merge():
     )
     payload = data.model_dump()
     payload["base_qty_type"] = "usdt"
+    payload.setdefault("stop_loss_close_pct", 100.0)
     s = Strategy(**payload)
     assert s.base_qty_type == "usdt"
     assert s.stop_loss_close_pct == 100.0
+    assert (s.source or "manual") == "manual"
 
 
 def test_strategy_create_no_duplicate_base_qty_type():
     data = StrategyCreate(account_id=1, direction="short", symbol="ETHUSDT", base_qty_value=10)
     payload = {**data.model_dump(), "base_qty_type": "margin_pct"}
     payload["base_qty_type"] = "usdt"
+    payload.setdefault("stop_loss_close_pct", 100.0)
     s = Strategy(**payload)
     assert s.base_qty_type == "usdt"
     assert s.stop_loss_close_pct == 100.0

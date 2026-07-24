@@ -54,6 +54,7 @@ class StrategyCreate(BaseModel):
         default=0.0, ge=0, description="条件止损名义亏损额 U（推算触发价）；0=不挂止损单",
     )
     reopen_after_close: bool = True
+    source: Literal["manual", "decline_rank"] = "manual"
 
 
 class StrategyUpdate(BaseModel):
@@ -84,6 +85,7 @@ class StrategyResponse(BaseModel):
     position_multiplier: float
     cumulative_loss_threshold_u: float
     reopen_after_close: bool
+    source: str = "manual"
     status: str
     started_at: Optional[datetime] = None
     created_at: datetime
@@ -102,3 +104,48 @@ class StrategyResponse(BaseModel):
         if v is None:
             return True
         return bool(v)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _default_source(cls, v):
+        return v or "manual"
+
+
+class DeclineRankAutoConfig(BaseModel):
+    """跌幅榜自动策略配置（BotConfig JSON）。"""
+    enabled: bool = False
+    account_id: Optional[int] = None
+    direction: Literal["long", "short"] = "short"
+    start_time: str = Field(default="03:00", description="北京时间 HH:MM")
+    end_time: str = Field(default="00:00", description="北京时间 HH:MM；可等于开始时间表示跨午夜至次日")
+    refresh_interval_min: int = Field(default=15, ge=1, le=1440)
+    top_n: int = Field(default=10, ge=1, le=100)
+    params: StrategyParamTemplateParams = Field(default_factory=StrategyParamTemplateParams)
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _validate_hhmm(cls, v: str) -> str:
+        raw = (v or "").strip()
+        parts = raw.split(":")
+        if len(parts) != 2:
+            raise ValueError("时间格式须为 HH:MM")
+        try:
+            h, m = int(parts[0]), int(parts[1])
+        except ValueError as e:
+            raise ValueError("时间格式须为 HH:MM") from e
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError("时间超出范围")
+        return f"{h:02d}:{m:02d}"
+
+
+class DeclineRankAutoStatus(BaseModel):
+    """跌幅榜自动策略运行状态。"""
+    enabled: bool = False
+    in_window: bool = False
+    window_id: Optional[str] = None
+    last_refresh_at: Optional[str] = None
+    next_refresh_at: Optional[str] = None
+    current_symbols: list[str] = Field(default_factory=list)
+    auto_strategy_count: int = 0
+    last_error: Optional[str] = None
+    cleaned_for_window: Optional[str] = None

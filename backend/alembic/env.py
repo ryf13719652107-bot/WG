@@ -18,7 +18,6 @@ from app.models.strategy import Strategy
 from app.models.position import Position
 from app.models.trade import Trade
 from app.models.account import Account
-from app.models.coin_pool import CoinPool
 from app.models.bot_config import BotConfig
 
 target_metadata = Base.metadata

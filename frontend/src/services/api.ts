@@ -195,4 +195,21 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ password }),
     }),
+
+  getDeclineRankConfig: (): Promise<import('../types/declineRank').DeclineRankAutoConfig> =>
+    request('/bot/decline-rank-config'),
+
+  saveDeclineRankConfig: (
+    config: import('../types/declineRank').DeclineRankAutoConfig,
+  ): Promise<import('../types/declineRank').DeclineRankAutoConfig> =>
+    request('/bot/decline-rank-config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+
+  getDeclineRankStatus: (): Promise<import('../types/declineRank').DeclineRankAutoStatus> =>
+    request('/bot/decline-rank-status'),
+
+  refreshDeclineRank: (): Promise<Record<string, unknown>> =>
+    request('/bot/decline-rank-refresh', { method: 'POST' }),
 };

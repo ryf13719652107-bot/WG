@@ -377,41 +377,13 @@ async def _flatten_strategy_orders_and_positions(
 
 @router.post("", response_model=StrategyResponse)
 async def create_strategy(data: StrategyCreate, db: AsyncSession = Depends(get_db)):
-    from ..models.account import Account
-    account = await db.get(Account, data.account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
+    from ..services.strategy_lifecycle import StrategyLifecycleError, create_strategy_record
 
-    # Constraint: max 2 strategies per symbol (one long + one short)
-    norm_sym = _norm_sym(data.symbol)
-    result = await db.execute(
-        select(Strategy).where(Strategy.account_id == data.account_id)
-    )
-    existing = result.scalars().all()
-    same_sym = [s for s in existing if _norm_sym(s.symbol or "") == norm_sym]
-    if len(same_sym) >= 2:
-        raise HTTPException(
-            status_code=400,
-            detail=f"币种 {data.symbol} 已有 2 个策略（一多一空），不可再创建",
-        )
-    # Check direction conflict
-    for s in same_sym:
-        if s.direction == data.direction:
-            raise HTTPException(
-                status_code=400,
-                detail=f"币种 {data.symbol} 已存在同方向策略（ID={s.id}），每币种只允许一多一空",
-            )
-
-    payload = data.model_dump()
-    payload["base_qty_type"] = "usdt"
-    payload["symbol"] = norm_sym
-    # 旧库 NOT NULL 遗留列（模型保留默认值，业务已废弃）
-    payload.setdefault("stop_loss_close_pct", 100.0)
-    strategy = Strategy(**payload)
-    db.add(strategy)
     try:
-        await db.commit()
-        await db.refresh(strategy)
+        strategy = await create_strategy_record(data, db, commit=True)
+    except StrategyLifecycleError as e:
+        status = 404 if e.code == "not_found" else 400
+        raise HTTPException(status_code=status, detail=e.message) from e
     except Exception as e:
         await db.rollback()
         import logging

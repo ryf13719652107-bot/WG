@@ -444,6 +444,17 @@ class StrategyScheduler:
                 coalesce=True,
                 max_instances=1,
             )
+        if not self._aps.get_job("decline_rank_auto"):
+            from .decline_rank_auto import decline_rank_auto_tick
+            self._aps.add_job(
+                decline_rank_auto_tick,
+                "interval",
+                seconds=60,
+                id="decline_rank_auto",
+                coalesce=True,
+                max_instances=1,
+            )
+
     def stop(self):
         self._running = False
         self._ws_disconnected.clear()
@@ -454,7 +465,7 @@ class StrategyScheduler:
             if not task.done():
                 task.cancel()
         self._order_watch_tasks.clear()
-        for job_id in ("position_sync", "account_equity_guard"):
+        for job_id in ("position_sync", "account_equity_guard", "decline_rank_auto"):
             if self._aps.get_job(job_id):
                 try:
                     self._aps.remove_job(job_id)

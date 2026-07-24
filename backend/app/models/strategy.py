@@ -36,6 +36,9 @@ class Strategy(Base):
     # 已废弃（仅兼容部分旧库 NOT NULL 列；API/业务逻辑不再使用）
     stop_loss_close_pct: Mapped[float] = mapped_column(Float, default=100.0, server_default="100.0")
 
+    # Source: 'manual' | 'decline_rank'（跌幅榜自动创建）
+    source: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
+
     # Runtime state
     status: Mapped[str] = mapped_column(String(20), default="stopped")  # 'running', 'stopped', 'error'
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)

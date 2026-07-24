@@ -15,6 +15,7 @@ from .models.strategy import Strategy
 from .routers import account, strategies, positions, trades, dashboard, websocket, auth
 from .services.scheduler import strategy_scheduler
 from .services.exchange_factory import get_public_exchange
+from .schemas.strategy import DeclineRankAutoConfig, DeclineRankAutoStatus
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
@@ -387,6 +388,46 @@ async def put_web_ui_password(body: WebUiPasswordUpdate, db: AsyncSession = Depe
         environment_has_password=env_has,
         database_has_password=db_has,
     )
+
+
+@app.get("/api/bot/decline-rank-config", response_model=DeclineRankAutoConfig)
+async def get_decline_rank_config(db: AsyncSession = Depends(get_db)):
+    from .services.decline_rank_auto import load_config
+    return await load_config(db)
+
+
+@app.put("/api/bot/decline-rank-config", response_model=DeclineRankAutoConfig)
+async def put_decline_rank_config(body: DeclineRankAutoConfig, db: AsyncSession = Depends(get_db)):
+    from fastapi import HTTPException
+    from .services.decline_rank_auto import save_config
+    try:
+        return await save_config(db, body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/api/bot/decline-rank-status", response_model=DeclineRankAutoStatus)
+async def get_decline_rank_status(db: AsyncSession = Depends(get_db)):
+    from .services.decline_rank_auto import get_status
+    return await get_status(db)
+
+
+@app.post("/api/bot/decline-rank-refresh")
+async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
+    """手动触发一次跌幅榜刷新（仅在启用且窗口内时真正建仓；测试可用）。"""
+    from .services.decline_rank_auto import load_config, refresh_once, is_in_window
+    from .config import now_beijing
+
+    config = await load_config(db)
+    if not config.enabled:
+        return JSONResponse(status_code=400, content={"detail": "跌幅榜自动策略未启用"})
+    if not config.account_id:
+        return JSONResponse(status_code=400, content={"detail": "未绑定账户"})
+    result = await refresh_once(db, config)
+    return {
+        "in_window": is_in_window(now_beijing(), config.start_time, config.end_time),
+        **result,
+    }
 
 
 # ---- SPA fallback: must be LAST after all API routes ----

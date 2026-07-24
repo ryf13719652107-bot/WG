@@ -12,6 +12,7 @@ export interface Strategy {
   position_multiplier: number;
   cumulative_loss_threshold_u: number;
   reopen_after_close: boolean;
+  source?: 'manual' | 'decline_rank' | string;
   status: 'running' | 'stopped' | 'error';
   started_at: string | null;
   created_at: string;
