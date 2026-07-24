@@ -19,6 +19,7 @@ export default function StrategyPage() {
   const [bulkBusy, setBulkBusy] = useState<'start' | 'stop' | 'panic' | null>(null);
   const [autoStatus, setAutoStatus] = useState<DeclineRankAutoStatus | null>(null);
   const [autoBusy, setAutoBusy] = useState<'pause' | 'refresh' | null>(null);
+  const [autoExpanded, setAutoExpanded] = useState(false);
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
 
   const loadAutoStatus = async () => {
@@ -162,42 +163,75 @@ export default function StrategyPage() {
 
   const editingStrategy = editingId ? strategies.find(s => s.id === editingId) || null : null;
 
+  const manualStrategies = strategies.filter((s) => s.source !== 'decline_rank');
+  const autoStrategies = strategies.filter((s) => s.source === 'decline_rank');
+  const autoRunning = autoStrategies.filter((s) => s.status === 'running').length;
+  const autoStopped = autoStrategies.filter((s) => s.status !== 'running').length;
+  const showAutoCard = Boolean(autoStatus?.enabled || autoStrategies.length > 0);
+
   const handleBulkStart = async () => {
-    if (!confirm('确认一键启动当前账户下全部已停止的策略？')) return;
-    setBulkBusy('start');
-    try {
-      const r = await api.bulkStartStrategies(selectedAccountId ?? undefined);
-      alert(`启动完成：成功 ${r.started}，失败 ${r.failed}，跳过 ${r.skipped}${r.errors?.length ? '\n' + r.errors.join('\n') : ''}`);
-      load();
-    } catch (e: unknown) {
-      alert('一键启动失败: ' + (e instanceof Error ? e.message : String(e)));
+    const targets = manualStrategies.filter((s) => s.status === 'stopped' || s.status === 'error');
+    if (targets.length === 0) {
+      alert('没有可启动的手动策略（自动策略请用上方合并卡片管理）');
+      return;
     }
+    if (!confirm(`确认启动 ${targets.length} 个已停止的手动策略？`)) return;
+    setBulkBusy('start');
+    let started = 0;
+    const errors: string[] = [];
+    for (const s of targets) {
+      try {
+        await api.startStrategy(s.id);
+        started += 1;
+      } catch (e: unknown) {
+        errors.push(`${s.symbol}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    alert(`启动完成：成功 ${started}${errors.length ? `\n失败:\n${errors.slice(0, 10).join('\n')}` : ''}`);
+    await load();
     setBulkBusy(null);
   };
 
   const handleBulkStop = async () => {
-    if (!confirm('确认一键停止当前账户下全部运行中的策略？')) return;
-    setBulkBusy('stop');
-    try {
-      const r = await api.bulkStopStrategies(selectedAccountId ?? undefined);
-      alert(`已停止 ${r.stopped} 个策略`);
-      load();
-    } catch (e: unknown) {
-      alert('一键停止失败: ' + (e instanceof Error ? e.message : String(e)));
+    const targets = manualStrategies.filter((s) => s.status === 'running');
+    if (targets.length === 0) {
+      alert('没有运行中的手动策略');
+      return;
     }
+    if (!confirm(`确认停止 ${targets.length} 个运行中的手动策略？`)) return;
+    setBulkBusy('stop');
+    for (const s of targets) {
+      try {
+        await api.stopStrategy(s.id);
+      } catch {
+      }
+    }
+    alert(`已停止手动策略`);
+    await load();
     setBulkBusy(null);
   };
 
   const handleBulkPanicClose = async () => {
-    if (!confirm('确认一键紧急平仓当前账户下全部策略？将市价平仓并撤单。')) return;
-    setBulkBusy('panic');
-    try {
-      const r = await api.bulkPanicClose(selectedAccountId ?? undefined);
-      alert(`平仓完成：成功 ${r.closed}，无仓 ${r.no_position}，失败 ${r.failed}`);
-      load();
-    } catch (e: unknown) {
-      alert('一键平仓失败: ' + (e instanceof Error ? e.message : String(e)));
+    const targets = manualStrategies;
+    if (targets.length === 0) {
+      alert('没有手动策略可平仓（自动策略请用「暂停自动」）');
+      return;
     }
+    if (!confirm(`确认对 ${targets.length} 个手动策略紧急平仓？自动策略不受影响。`)) return;
+    setBulkBusy('panic');
+    let closed = 0;
+    let failed = 0;
+    for (const s of targets) {
+      try {
+        const r = await api.panicCloseStrategy(s.id);
+        if ((r.failed || 0) > 0) failed += 1;
+        else closed += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    alert(`手动策略平仓：处理 ${closed}，失败 ${failed}`);
+    await load();
     setBulkBusy(null);
   };
 
@@ -215,19 +249,38 @@ export default function StrategyPage() {
         </button>
       </div>
 
-      {autoStatus?.enabled && (
-        <div className="bg-cyan-950/40 border border-cyan-800/60 rounded-lg p-3 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm text-cyan-100 flex items-center gap-2">
-              <TrendingDown size={16} className="text-cyan-400 shrink-0" />
-              <span>
-                跌幅榜自动策略已启用
-                {' · '}
-                {autoStatus.in_window ? '运行窗口内' : '等待下一窗口'}
-                {' · '}自动策略 {autoStatus.auto_strategy_count} 个
-              </span>
+      {showAutoCard && (
+        <div className="bg-gray-900 border border-cyan-800/50 rounded-lg p-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1.5 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <TrendingDown size={18} className="text-cyan-400 shrink-0" />
+                <span className="font-semibold text-white text-base">跌幅榜自动策略</span>
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  autoStatus?.enabled ? 'bg-cyan-600/20 text-cyan-300' : 'bg-gray-700 text-gray-400'
+                }`}>
+                  {autoStatus?.enabled ? '已启用' : '已暂停（残留仓位）'}
+                </span>
+                {autoStatus?.enabled && (
+                  <span className={`text-xs px-2 py-0.5 rounded ${
+                    autoStatus.in_window ? 'bg-green-600/20 text-green-400' : 'bg-gray-700 text-gray-400'
+                  }`}>
+                    {autoStatus.in_window ? '运行窗口内' : '等待下一窗口'}
+                  </span>
+                )}
+                <span className="text-xs px-2 py-0.5 rounded bg-cyan-600/10 text-cyan-400/90">
+                  {autoStrategies.length} 币 · 运行 {autoRunning} · 停止 {autoStopped}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500">
+                上次刷新：{autoStatus?.last_refresh_at || '尚未刷新'}
+                {autoStatus?.next_refresh_at ? ` · 下次：${autoStatus.next_refresh_at}` : ''}
+              </div>
+              {autoStatus?.last_error && (
+                <div className="text-xs text-amber-300">最近错误：{autoStatus.last_error}</div>
+              )}
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 shrink-0">
               <button
                 type="button"
                 disabled={autoBusy !== null}
@@ -238,36 +291,76 @@ export default function StrategyPage() {
               </button>
               <button
                 type="button"
-                disabled={autoBusy !== null || !autoStatus.in_window}
+                disabled={autoBusy !== null || !autoStatus?.enabled || !autoStatus.in_window}
                 onClick={() => void handleRefreshAuto()}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-50"
-                title={!autoStatus.in_window ? '当前不在运行窗口' : '立即拉榜并建仓'}
               >
                 <RefreshCw size={12} />
-                {autoBusy === 'refresh' ? '刷新中…' : '立即刷新建仓'}
+                {autoBusy === 'refresh' ? '刷新中…' : '立即刷新'}
               </button>
-              <button
-                type="button"
-                disabled={autoBusy !== null}
-                onClick={() => void handlePauseAuto()}
-                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50"
-              >
-                <Pause size={12} />
-                {autoBusy === 'pause' ? '暂停中…' : '暂停自动'}
-              </button>
+              {(autoStatus?.enabled || autoStrategies.length > 0) && (
+                <button
+                  type="button"
+                  disabled={autoBusy !== null}
+                  onClick={() => void handlePauseAuto()}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-amber-700 hover:bg-amber-600 text-white disabled:opacity-50"
+                >
+                  <Pause size={12} />
+                  {autoBusy === 'pause' ? '处理中…' : '暂停并清理'}
+                </button>
+              )}
             </div>
           </div>
-          <div className="text-xs text-cyan-200/70">
-            上次刷新：{autoStatus.last_refresh_at || '尚未刷新'}
-            {autoStatus.next_refresh_at ? ` · 下次：${autoStatus.next_refresh_at}` : ''}
-            {!autoStatus.in_window && ' · 到开始时间后才会自动建仓；卡片出现在下方列表'}
-            {autoStatus.in_window && autoStatus.auto_strategy_count === 0 && ' · 可点「立即刷新建仓」；也可等待约 1 分钟调度；需顶栏总开关为「运行中」'}
-          </div>
-          {autoStatus.last_error && (
-            <div className="text-xs text-amber-300">最近错误：{autoStatus.last_error}</div>
+
+          <button
+            type="button"
+            onClick={() => setAutoExpanded((v) => !v)}
+            className="text-xs text-cyan-400/90 hover:text-cyan-300"
+          >
+            {autoExpanded ? '收起币种列表 ▲' : `展开币种列表（${autoStrategies.length}）▼`}
+          </button>
+
+          {autoExpanded && (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-2 max-h-56 overflow-y-auto">
+              {autoStrategies.length === 0 ? (
+                <p className="text-xs text-gray-600 px-1 py-2">暂无已创建的自动策略币种</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  {autoStrategies.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex items-center justify-between gap-2 px-2 py-1.5 rounded bg-gray-900/80 text-xs"
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-gray-200 font-medium truncate">{s.symbol}</span>
+                        <span className={s.direction === 'long' ? 'text-green-400' : 'text-red-400'}>
+                          {s.direction === 'long' ? '多' : '空'}
+                        </span>
+                        <span className={
+                          s.status === 'running' ? 'text-green-400' :
+                          s.status === 'error' ? 'text-red-400' : 'text-gray-500'
+                        }>
+                          {s.status === 'running' ? '运行' : s.status === 'error' ? '异常' : '停止'}
+                        </span>
+                      </div>
+                      <Link
+                        to={`/strategies/${s.id}`}
+                        className="text-blue-400 hover:text-blue-300 shrink-0"
+                        title="详情"
+                      >
+                        <Eye size={14} />
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
-          {autoStatus.current_symbols?.length > 0 && (
-            <div className="text-xs text-gray-500 break-all">当前榜：{autoStatus.current_symbols.join(', ')}</div>
+
+          {!autoExpanded && (autoStatus?.current_symbols?.length || 0) > 0 && (
+            <div className="text-xs text-gray-500 break-all">
+              当前榜：{autoStatus?.current_symbols.join(', ')}
+            </div>
           )}
         </div>
       )}
@@ -280,7 +373,7 @@ export default function StrategyPage() {
           className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-sm font-semibold transition-colors"
         >
           <Play size={18} />
-          {bulkBusy === 'start' ? '启动中…' : '一键启动全部'}
+          {bulkBusy === 'start' ? '启动中…' : '一键启动手动'}
         </button>
         <button
           type="button"
@@ -289,7 +382,7 @@ export default function StrategyPage() {
           className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-sm font-semibold transition-colors"
         >
           <Square size={18} />
-          {bulkBusy === 'stop' ? '停止中…' : '一键停止全部'}
+          {bulkBusy === 'stop' ? '停止中…' : '一键停止手动'}
         </button>
         <button
           type="button"
@@ -298,7 +391,7 @@ export default function StrategyPage() {
           className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-sm font-semibold transition-colors"
         >
           <AlertTriangle size={18} />
-          {bulkBusy === 'panic' ? '平仓中…' : '一键平仓全部'}
+          {bulkBusy === 'panic' ? '平仓中…' : '一键平仓手动'}
         </button>
       </div>
 
@@ -377,7 +470,7 @@ export default function StrategyPage() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        {strategies.map((s) => (
+        {manualStrategies.map((s) => (
           <div key={s.id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 flex-wrap">
@@ -394,11 +487,6 @@ export default function StrategyPage() {
                 }`}>
                   {s.status === 'running' ? '运行中' : s.status === 'error' ? '异常' : '已停止'}
                 </span>
-                {s.source === 'decline_rank' && (
-                  <span className="text-xs px-2 py-0.5 rounded bg-cyan-600/20 text-cyan-400">
-                    跌幅榜自动
-                  </span>
-                )}
               </div>
             </div>
 
@@ -427,8 +515,11 @@ export default function StrategyPage() {
             </div>
           </div>
         ))}
-        {strategies.length === 0 && (
+        {manualStrategies.length === 0 && !showAutoCard && (
           <div className="col-span-full text-center text-gray-600 py-8">暂无策略</div>
+        )}
+        {manualStrategies.length === 0 && showAutoCard && (
+          <div className="col-span-full text-center text-gray-600 py-4 text-sm">暂无手动策略</div>
         )}
       </div>
     </div>
