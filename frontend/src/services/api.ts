@@ -35,7 +35,22 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     );
   }
   if (res.status === 204) return undefined as unknown as T;
-  return res.json() as Promise<T>;
+  const contentType = res.headers.get('content-type') || '';
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  if (contentType.includes('application/json') || text.trimStart().startsWith('{') || text.trimStart().startsWith('[')) {
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      throw new Error(`接口返回无法解析的 JSON（${url}）`);
+    }
+  }
+  if (text.trimStart().startsWith('<!DOCTYPE') || text.trimStart().startsWith('<html')) {
+    throw new Error(
+      `接口 ${url} 返回了网页而非 JSON，通常是后端未重启或未更新到含该接口的版本。请在服务器重启后端进程后再试。`,
+    );
+  }
+  throw new Error(`接口 ${url} 返回了非 JSON 内容`);
 }
 
 export const api = {

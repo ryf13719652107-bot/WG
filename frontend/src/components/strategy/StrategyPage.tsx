@@ -5,12 +5,15 @@ import { useDashboardStore } from '../../store/dashboardStore';
 import type { Strategy } from '../../types/strategy';
 import type { Account } from '../../types';
 import StrategyForm from './StrategyForm';
-import { Play, Square, AlertTriangle, Trash2, Plus, Eye, Edit3 } from 'lucide-react';
+import DeclineRankAutoForm from './DeclineRankAutoForm';
+import { Play, Square, AlertTriangle, Trash2, Plus, Eye, Edit3, Hand, TrendingDown } from 'lucide-react';
+
+type CreateMode = null | 'choose' | 'manual' | 'auto';
 
 export default function StrategyPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [showForm, setShowForm] = useState(false);
+  const [createMode, setCreateMode] = useState<CreateMode>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [bulkBusy, setBulkBusy] = useState<'start' | 'stop' | 'panic' | null>(null);
   const selectedAccountId = useDashboardStore((s) => s.selectedAccountId);
@@ -28,6 +31,11 @@ export default function StrategyPage() {
   };
 
   useEffect(() => { load(); }, [selectedAccountId]);
+
+  const closeCreate = () => {
+    setCreateMode(null);
+    setEditingId(null);
+  };
 
   const handleStart = async (id: number) => {
     try {
@@ -74,14 +82,14 @@ export default function StrategyPage() {
   };
 
   const handleEdit = (id: number) => {
+    setCreateMode(null);
     setEditingId(id);
-    setShowForm(true);
   };
 
   const handleSubmit = async (data: any) => {
     try {
       await api.createStrategy(data);
-      setShowForm(false);
+      closeCreate();
       load();
     } catch (e: any) {
       alert('创建策略失败: ' + (e.message || '未知错误'));
@@ -92,8 +100,7 @@ export default function StrategyPage() {
     if (!editingId) return;
     try {
       await api.updateStrategy(editingId, data);
-      setShowForm(false);
-      setEditingId(null);
+      closeCreate();
       load();
     } catch (e: any) {
       alert('更新策略失败: ' + (e.message || '未知错误'));
@@ -129,11 +136,11 @@ export default function StrategyPage() {
   };
 
   const handleBulkPanicClose = async () => {
-    if (!confirm('确认一键平仓？将停止并市价平掉当前账户下全部策略的持仓。')) return;
+    if (!confirm('确认一键紧急平仓当前账户下全部策略？将市价平仓并撤单。')) return;
     setBulkBusy('panic');
     try {
       const r = await api.bulkPanicClose(selectedAccountId ?? undefined);
-      alert(`平仓完成：成功 ${r.closed}，无持仓 ${r.no_position}，失败 ${r.failed}`);
+      alert(`平仓完成：成功 ${r.closed}，无仓 ${r.no_position}，失败 ${r.failed}`);
       load();
     } catch (e: unknown) {
       alert('一键平仓失败: ' + (e instanceof Error ? e.message : String(e)));
@@ -143,10 +150,11 @@ export default function StrategyPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center justify-between gap-3">
         <h2 className="text-xl font-bold">策略管理</h2>
         <button
-          onClick={() => { setEditingId(null); setShowForm(true); }}
+          type="button"
+          onClick={() => { setEditingId(null); setCreateMode('choose'); }}
           className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors shrink-0"
         >
           <Plus size={16} />
@@ -184,21 +192,69 @@ export default function StrategyPage() {
         </button>
       </div>
 
-      {showForm && editingId === null && (
+      {createMode === 'choose' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 max-w-2xl space-y-3">
+          <h3 className="text-base font-semibold text-white">选择策略类型</h3>
+          <p className="text-xs text-gray-500">手动：自选币种创建单个策略。自动：按跌幅榜定时批量创建并在窗口结束时清理。</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setCreateMode('manual')}
+              className="flex flex-col items-start gap-2 p-4 rounded-lg border border-gray-700 hover:border-blue-500 bg-gray-800/50 text-left transition-colors"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Hand size={18} className="text-blue-400" />
+                手动策略
+              </span>
+              <span className="text-xs text-gray-500">选择账户、方向、交易对与网格参数，创建单个策略。</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateMode('auto')}
+              className="flex flex-col items-start gap-2 p-4 rounded-lg border border-gray-700 hover:border-cyan-500 bg-gray-800/50 text-left transition-colors"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-white">
+                <TrendingDown size={18} className="text-cyan-400" />
+                自动策略（跌幅榜）
+              </span>
+              <span className="text-xs text-gray-500">配置时间窗口与统一参数，按跌幅榜前 N 自动建仓。</span>
+            </button>
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={closeCreate}
+              className="px-4 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {createMode === 'manual' && (
         <StrategyForm
           accounts={accounts}
           initialData={null}
           onSubmit={handleSubmit}
-          onCancel={() => setShowForm(false)}
+          onCancel={closeCreate}
         />
       )}
 
-      {showForm && editingId !== null && editingStrategy && (
+      {createMode === 'auto' && (
+        <DeclineRankAutoForm
+          accounts={accounts}
+          onCancel={closeCreate}
+          onSaved={() => load()}
+        />
+      )}
+
+      {editingId !== null && editingStrategy && (
         <StrategyForm
           accounts={accounts}
           initialData={editingStrategy}
           onSubmit={handleSubmitEdit}
-          onCancel={() => { setShowForm(false); setEditingId(null); }}
+          onCancel={closeCreate}
         />
       )}
 
@@ -206,7 +262,7 @@ export default function StrategyPage() {
         {strategies.map((s) => (
           <div key={s.id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-white text-base">{s.symbol}</span>
                 <span className={`text-xs px-2 py-0.5 rounded font-medium ${
                   s.direction === 'long' ? 'bg-green-600/20 text-green-400' : 'bg-red-600/20 text-red-400'

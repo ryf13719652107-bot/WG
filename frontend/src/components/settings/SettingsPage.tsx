@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import type { Account, WebUiPasswordStatus } from '../../types';
-import type { DeclineRankAutoConfig, DeclineRankAutoStatus } from '../../types/declineRank';
-import { defaultDeclineRankConfig } from '../../types/declineRank';
-import StrategyParamFieldsForm from '../strategy/StrategyParamFieldsForm';
-import { Key, Trash2, Plus, Shield, AlertCircle, Lock, Wallet, TrendingDown } from 'lucide-react';
+import { Key, Trash2, Plus, Shield, AlertCircle, Lock, Wallet } from 'lucide-react';
 
 export default function SettingsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -22,13 +19,6 @@ export default function SettingsPage() {
   const [equityDraft, setEquityDraft] = useState<Record<number, string>>({});
   const [equitySaving, setEquitySaving] = useState<number | null>(null);
   const [equityErr, setEquityErr] = useState('');
-
-  const [declineCfg, setDeclineCfg] = useState<DeclineRankAutoConfig>(defaultDeclineRankConfig());
-  const [declineStatus, setDeclineStatus] = useState<DeclineRankAutoStatus | null>(null);
-  const [declineLoading, setDeclineLoading] = useState(false);
-  const [declineSaving, setDeclineSaving] = useState(false);
-  const [declineErr, setDeclineErr] = useState('');
-  const [declineOk, setDeclineOk] = useState('');
 
   const loadAccounts = async () => {
     setLoadingAccounts(true);
@@ -61,68 +51,13 @@ export default function SettingsPage() {
     setLoadingWebUi(false);
   };
 
-  const loadDeclineRank = async () => {
-    setDeclineLoading(true);
-    setDeclineErr('');
-    try {
-      const [cfg, st] = await Promise.all([
-        api.getDeclineRankConfig(),
-        api.getDeclineRankStatus(),
-      ]);
-      setDeclineCfg({
-        ...defaultDeclineRankConfig(),
-        ...cfg,
-        params: { ...defaultDeclineRankConfig().params, ...(cfg.params || {}) },
-      });
-      setDeclineStatus(st);
-    } catch (e: unknown) {
-      setDeclineErr(e instanceof Error ? e.message : String(e));
-    }
-    setDeclineLoading(false);
-  };
-
   const load = async () => {
-    await Promise.all([loadAccounts(), loadWebUi(), loadDeclineRank()]);
+    await Promise.all([loadAccounts(), loadWebUi()]);
   };
 
   useEffect(() => {
     load();
   }, []);
-
-  const handleSaveDeclineRank = async () => {
-    setDeclineSaving(true);
-    setDeclineErr('');
-    setDeclineOk('');
-    try {
-      if (declineCfg.enabled && !declineCfg.account_id) {
-        setDeclineErr('启用自动策略时必须选择绑定账户');
-        setDeclineSaving(false);
-        return;
-      }
-      if (declineCfg.refresh_interval_min < 1) {
-        setDeclineErr('刷新间隔至少 1 分钟');
-        setDeclineSaving(false);
-        return;
-      }
-      if (declineCfg.top_n < 1 || declineCfg.top_n > 100) {
-        setDeclineErr('跌幅榜前 N 须在 1–100');
-        setDeclineSaving(false);
-        return;
-      }
-      const saved = await api.saveDeclineRankConfig(declineCfg);
-      setDeclineCfg({
-        ...defaultDeclineRankConfig(),
-        ...saved,
-        params: { ...defaultDeclineRankConfig().params, ...(saved.params || {}) },
-      });
-      const st = await api.getDeclineRankStatus();
-      setDeclineStatus(st);
-      setDeclineOk('已保存跌幅榜自动策略配置');
-    } catch (e: unknown) {
-      setDeclineErr(e instanceof Error ? e.message : String(e));
-    }
-    setDeclineSaving(false);
-  };
 
   const handleAdd = async () => {
     if (!form.name.trim()) { setSaveError('请输入账户名称'); return; }
@@ -429,170 +364,6 @@ export default function SettingsPage() {
               <button onClick={handleAdd} className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm">保存</button>
               <button onClick={() => { setShowForm(false); setSaveError(''); }} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">取消</button>
             </div>
-          </div>
-        )}
-      </section>
-
-      <section className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-gray-300 flex items-center gap-2 mb-3">
-          <TrendingDown size={16} className="text-cyan-400" />
-          跌幅榜自动策略
-        </h3>
-        <p className="text-xs text-gray-500 mb-3 leading-relaxed">
-          北京时间窗口内按绑定账户所属交易所定时获取 USDT 永续合约 24h 跌幅榜前 N，
-          为尚未创建的币种自动建策略并启动（同一币种不重复）。窗口结束后仅清理本功能创建的策略（撤单+市价平仓+删除），手动策略不受影响。
-          另需顶栏总开关处于「运行中」才会执行扫描。
-        </p>
-
-        {declineErr && (
-          <div className="flex items-center gap-2 text-red-400 text-xs mb-2 bg-red-900/20 rounded px-2 py-1.5">
-            <AlertCircle size={14} /> {declineErr}
-          </div>
-        )}
-        {declineOk && (
-          <div className="text-green-400 text-xs mb-2 bg-green-900/20 rounded px-2 py-1.5">{declineOk}</div>
-        )}
-
-        {declineLoading ? (
-          <p className="text-gray-500 text-sm">加载中…</p>
-        ) : (
-          <div className="space-y-3 text-sm">
-            {declineStatus && (
-              <div className="text-xs text-gray-400 bg-gray-800/60 rounded p-2.5 space-y-1">
-                <div>
-                  状态：
-                  <span className={declineStatus.in_window ? 'text-cyan-300' : 'text-gray-300'}>
-                    {declineStatus.enabled
-                      ? (declineStatus.in_window ? '运行窗口内' : '等待下一窗口')
-                      : '未启用'}
-                  </span>
-                  {' · '}自动策略数：<span className="text-gray-200">{declineStatus.auto_strategy_count}</span>
-                </div>
-                <div>
-                  上次刷新：{declineStatus.last_refresh_at || '—'}
-                  {' · '}下次：{declineStatus.next_refresh_at || '—'}
-                </div>
-                {declineStatus.current_symbols?.length > 0 && (
-                  <div className="text-gray-500 break-all">
-                    当前榜：{declineStatus.current_symbols.join(', ')}
-                  </div>
-                )}
-                {declineStatus.last_error && (
-                  <div className="text-amber-400">最近错误：{declineStatus.last_error}</div>
-                )}
-              </div>
-            )}
-
-            <label className="flex items-center gap-2 text-gray-300">
-              <input
-                type="checkbox"
-                checked={declineCfg.enabled}
-                onChange={(e) => setDeclineCfg({ ...declineCfg, enabled: e.target.checked })}
-              />
-              启用跌幅榜自动策略
-            </label>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">绑定账户</label>
-                <select
-                  value={declineCfg.account_id ?? ''}
-                  onChange={(e) =>
-                    setDeclineCfg({
-                      ...declineCfg,
-                      account_id: e.target.value ? Number(e.target.value) : null,
-                    })
-                  }
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                >
-                  <option value="">请选择账户</option>
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.exchange === 'okx' ? 'OKX' : '币安'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">方向</label>
-                <select
-                  value={declineCfg.direction}
-                  onChange={(e) =>
-                    setDeclineCfg({
-                      ...declineCfg,
-                      direction: e.target.value as 'long' | 'short',
-                    })
-                  }
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                >
-                  <option value="short">做空</option>
-                  <option value="long">做多</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">开始时间（北京时间）</label>
-                <input
-                  type="time"
-                  value={declineCfg.start_time}
-                  onChange={(e) => setDeclineCfg({ ...declineCfg, start_time: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">结束时间（北京时间）</label>
-                <input
-                  type="time"
-                  value={declineCfg.end_time}
-                  onChange={(e) => setDeclineCfg({ ...declineCfg, end_time: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                />
-                <span className="text-xs text-gray-600">例：03:00→00:00 表示跨日至午夜</span>
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">刷新间隔（分钟）</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={declineCfg.refresh_interval_min}
-                  onChange={(e) =>
-                    setDeclineCfg({
-                      ...declineCfg,
-                      refresh_interval_min: Number(e.target.value),
-                    })
-                  }
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">跌幅榜前 N 名</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={declineCfg.top_n}
-                  onChange={(e) =>
-                    setDeclineCfg({ ...declineCfg, top_n: Number(e.target.value) })
-                  }
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-            </div>
-
-            <div className="border-t border-gray-800 pt-3">
-              <StrategyParamFieldsForm
-                value={declineCfg.params}
-                onChange={(params) => setDeclineCfg({ ...declineCfg, params })}
-              />
-            </div>
-
-            <button
-              type="button"
-              disabled={declineSaving}
-              onClick={() => void handleSaveDeclineRank()}
-              className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 rounded text-sm"
-            >
-              {declineSaving ? '保存中…' : '保存跌幅榜配置'}
-            </button>
           </div>
         )}
       </section>
