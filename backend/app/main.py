@@ -424,9 +424,15 @@ async def get_decline_rank_status(db: AsyncSession = Depends(get_db)):
 @app.post("/api/bot/decline-rank-refresh")
 @app.put("/api/bot/decline-rank-refresh")
 async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
-    """手动触发一次跌幅榜刷新。"""
+    """手动触发一次跌幅榜刷新（须已进入当日开盘会话）。"""
     from fastapi import HTTPException
-    from .services.decline_rank_auto import load_config, refresh_once, is_in_window
+    from .services.decline_rank_auto import (
+        load_config,
+        refresh_once,
+        resolve_session,
+        count_auto_strategies,
+        _load_state,
+    )
     from .config import now_beijing
 
     config = await load_config(db)
@@ -434,11 +440,26 @@ async def post_decline_rank_refresh(db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="跌幅榜自动策略未启用")
     if not config.account_id:
         raise HTTPException(status_code=400, detail="未绑定账户")
-    in_win = is_in_window(now_beijing(), config.start_time, config.end_time)
-    if not in_win:
+
+    now = now_beijing()
+    state = await _load_state(db)
+    auto_n = await count_auto_strategies(db, config.account_id)
+    resolved = resolve_session(
+        now,
+        config.start_time,
+        config.end_time,
+        session_window_id=state.get("session_window_id"),
+        has_auto_strategies=auto_n > 0,
+        grace_minutes=3,
+    )
+    if not resolved["session_active"]:
+        nxt = resolved.get("next_session_at") or f"次日 {config.start_time}"
         raise HTTPException(
             status_code=400,
-            detail=f"当前不在运行窗口（{config.start_time}–{config.end_time}），无法建仓。可改时间窗口或等到开始时间。",
+            detail=(
+                f"今日开始时间 {config.start_time} 已过，将于 {nxt} 自动开盘拉榜。"
+                f"结束时间 {config.end_time}。不会在当天中途进场。"
+            ),
         )
     result = await refresh_once(db, config)
     return {"in_window": True, **result}

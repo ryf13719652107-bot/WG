@@ -142,6 +142,8 @@ class DeclineRankAutoStatus(BaseModel):
     """跌幅榜自动策略运行状态。"""
     enabled: bool = False
     in_window: bool = False
+    waiting_next_start: bool = False
+    next_session_at: Optional[str] = None
     window_id: Optional[str] = None
     last_refresh_at: Optional[str] = None
     next_refresh_at: Optional[str] = None

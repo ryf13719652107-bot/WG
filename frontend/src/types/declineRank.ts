@@ -14,6 +14,8 @@ export interface DeclineRankAutoConfig {
 export interface DeclineRankAutoStatus {
   enabled: boolean;
   in_window: boolean;
+  waiting_next_start?: boolean;
+  next_session_at?: string | null;
   window_id: string | null;
   last_refresh_at: string | null;
   next_refresh_at: string | null;

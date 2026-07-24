@@ -88,9 +88,9 @@ export default function DeclineRankAutoForm({ accounts, onCancel, onSaved }: Pro
         <h3 className="text-base font-semibold text-white">跌幅榜自动策略</h3>
       </div>
       <p className="text-xs text-gray-500 leading-relaxed">
-        北京时间窗口内按绑定账户所属交易所定时获取 USDT 永续合约 24h 跌幅榜前 N，
-        为尚未创建的币种自动建策略并启动（同一币种不重复）。窗口结束后仅清理本功能创建的策略（撤单+市价平仓+删除），手动策略不受影响。
-        另需顶栏总开关处于「运行中」才会执行扫描建仓。
+        每天在「开始时间」开盘拉取跌幅榜并建仓，到「结束时间」撤单平仓删除自动策略。
+        若保存启用时当天开始时间已过（例如开始 03:00、现在 18:42），则等到次日开始时间再开盘，不会中途进场。
+        另需顶栏总开关处于「运行中」。
       </p>
 
       {err && (
@@ -193,7 +193,7 @@ export default function DeclineRankAutoForm({ accounts, onCancel, onSaved }: Pro
                 onChange={(e) => setCfg({ ...cfg, end_time: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
               />
-              <span className="text-xs text-gray-600">例：03:00→00:00 表示跨日至午夜</span>
+              <span className="text-xs text-gray-600">例：03:00→00:00；若当天 03:00 已过则次日 03:00 才开盘</span>
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">刷新间隔（分钟）</label>

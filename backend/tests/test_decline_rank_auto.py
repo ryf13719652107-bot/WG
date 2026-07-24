@@ -99,10 +99,42 @@ def test_parse_state_datetime_naive_compatible():
     assert lr is not None
     assert lr.tzinfo is None
     now = now_beijing()
-    # 不应抛异常
     _ = (now.replace(year=2026, month=7, day=24, hour=3, minute=15) - lr).total_seconds()
 
     aware = datetime(2026, 7, 24, 3, 0, tzinfo=timezone(timedelta(hours=8)))
     lr2 = _parse_state_datetime(aware.isoformat())
     assert lr2 is not None and lr2.tzinfo is None
     assert lr2.hour == 3
+
+
+def test_next_start_waits_until_tomorrow_if_start_passed():
+    from app.services.decline_rank_auto import next_start_datetime, resolve_session
+
+    now = datetime(2026, 7, 24, 18, 42)
+    nxt = next_start_datetime(now, "03:00", "00:00")
+    assert nxt == datetime(2026, 7, 25, 3, 0)
+
+    r = resolve_session(
+        now, "03:00", "00:00",
+        session_window_id=None,
+        has_auto_strategies=False,
+    )
+    assert r["calendar_in_window"] is True
+    assert r["session_active"] is False
+    assert r["waiting_next_start"] is True
+    assert "2026-07-25 03:00" in (r["next_session_at"] or "")
+
+    r2 = resolve_session(
+        datetime(2026, 7, 25, 3, 1), "03:00", "00:00",
+        session_window_id=None,
+        has_auto_strategies=False,
+    )
+    assert r2["session_active"] is True
+    assert r2["enter_session"] is True
+
+    r3 = resolve_session(
+        now, "03:00", "00:00",
+        session_window_id="2026-07-24",
+        has_auto_strategies=False,
+    )
+    assert r3["session_active"] is True

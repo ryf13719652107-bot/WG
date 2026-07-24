@@ -44,25 +44,23 @@ def _parse_hhmm(s: str) -> dtime:
     return dtime(hour=int(parts[0]), minute=int(parts[1]))
 
 
-def is_in_window(now: datetime, start_hhmm: str, end_hhmm: str) -> bool:
-    """Beijing-time window. Equal start/end = full day. Cross-midnight when start > end."""
+def _naive_time(now: datetime) -> dtime:
     t = now.timetz().replace(tzinfo=None) if hasattr(now, "timetz") else now.time()
-    # normalize to time without tz
     if getattr(t, "tzinfo", None) is not None:
         t = t.replace(tzinfo=None)
+    return t
+
+
+def is_in_window(now: datetime, start_hhmm: str, end_hhmm: str) -> bool:
+    """日历时间是否落在 [start, end)（支持跨午夜；start==end 表示全天）。"""
+    t = _naive_time(now)
     start = _parse_hhmm(start_hhmm)
     end = _parse_hhmm(end_hhmm)
     if start == end:
         return True
     if start < end:
         return start <= t < end
-    # cross midnight: e.g. 03:00 -> 00:00 means [03:00, 24:00) U [00:00, 00:00) i.e. t >= 03:00
-    # For end=00:00: in window when t >= start (from start until midnight exclusive of next day's 00:00
-    # which is equivalent to t >= start OR ... wait:
-    # User case: start 03:00, end 00:00 (midnight). Active from 03:00 inclusive until 00:00 exclusive.
-    # So active when t >= 03:00 (same calendar day) — at 00:00 window ends.
-    # Cross-midnight general: in window if t >= start OR t < end.
-    # For end=00:00: t >= start OR t < 00:00 → only t >= start (since t < 00:00 is never).
+    # 跨午夜：如 03:00→00:00，表示当天 03:00 起至次日 00:00 前
     return t >= start or t < end
 
 
@@ -71,21 +69,134 @@ def window_id_for(now: datetime, start_hhmm: str, end_hhmm: str) -> str:
     start = _parse_hhmm(start_hhmm)
     end = _parse_hhmm(end_hhmm)
     d = now.date()
-    t = now.time().replace(tzinfo=None) if now.tzinfo else now.time()
+    t = _naive_time(now)
     if start == end:
         return d.isoformat()
     if start < end:
-        # same-day window [start, end)
         if t < start:
             return (d - timedelta(days=1)).isoformat()
         return d.isoformat()
-    # cross-midnight: window started on date D at `start`, ends next day at `end`
     if t >= start:
         return d.isoformat()
     if t < end:
         return (d - timedelta(days=1)).isoformat()
-    # idle gap [end, start): last window started yesterday
     return (d - timedelta(days=1)).isoformat()
+
+
+def window_start_datetime(now: datetime, start_hhmm: str, end_hhmm: str) -> datetime:
+    """当前日历窗口的开始时刻（若此刻不在窗口内，则为「即将开始的下一窗口」开始时刻）。"""
+    start = _parse_hhmm(start_hhmm)
+    if is_in_window(now, start_hhmm, end_hhmm):
+        wid = window_id_for(now, start_hhmm, end_hhmm)
+        return datetime.combine(datetime.fromisoformat(wid).date(), start)
+    return next_start_datetime(now, start_hhmm, end_hhmm)
+
+
+def next_start_datetime(now: datetime, start_hhmm: str, end_hhmm: str) -> datetime:
+    """下一次允许「开盘进场」的开始时间。
+
+    规则：每天只在 start_time 开盘。若今天的 start 已过且尚未进入本窗口会话，
+    则等到明天的 start（例如 start=03:00、现在=18:42 → 次日 03:00）。
+    """
+    start = _parse_hhmm(start_hhmm)
+    today_start = datetime.combine(now.date(), start)
+    if now < today_start:
+        return today_start
+    # 今天开盘时刻已过 → 下一交易日开盘
+    return today_start + timedelta(days=1)
+
+
+def is_near_window_start(
+    now: datetime,
+    start_hhmm: str,
+    end_hhmm: str,
+    *,
+    grace_minutes: int = 3,
+) -> bool:
+    """是否刚到达本窗口开盘（供分钟级调度捕捉 start 边界）。"""
+    if not is_in_window(now, start_hhmm, end_hhmm):
+        return False
+    start_dt = window_start_datetime(now, start_hhmm, end_hhmm)
+    if now < start_dt:
+        return False
+    return (now - start_dt) <= timedelta(minutes=max(1, grace_minutes))
+
+
+def resolve_session(
+    now: datetime,
+    start_hhmm: str,
+    end_hhmm: str,
+    *,
+    session_window_id: Optional[str],
+    has_auto_strategies: bool,
+    grace_minutes: int = 3,
+) -> dict:
+    """决定此刻是否应真正跑自动建仓。
+
+    - 日历不在窗口：结束/等待
+    - 已有本窗口 session，或已有自动策略（重启恢复）：继续
+    - 刚到开盘时刻：开新 session
+    - 否则（开盘已过才启用）：等待次日开盘，不中途进场
+    """
+    cal_in = is_in_window(now, start_hhmm, end_hhmm)
+    wid = window_id_for(now, start_hhmm, end_hhmm)
+    nxt = next_start_datetime(now, start_hhmm, end_hhmm)
+
+    if not cal_in:
+        return {
+            "calendar_in_window": False,
+            "session_active": False,
+            "window_id": wid,
+            "session_window_id": None,
+            "waiting_next_start": True,
+            "next_session_at": nxt.isoformat(sep=" ", timespec="minutes"),
+            "enter_session": False,
+        }
+
+    if session_window_id == wid:
+        return {
+            "calendar_in_window": True,
+            "session_active": True,
+            "window_id": wid,
+            "session_window_id": wid,
+            "waiting_next_start": False,
+            "next_session_at": None,
+            "enter_session": False,
+        }
+
+    if has_auto_strategies:
+        # 进程重启等：窗口内已有自动策略则恢复会话，避免误等次日
+        return {
+            "calendar_in_window": True,
+            "session_active": True,
+            "window_id": wid,
+            "session_window_id": wid,
+            "waiting_next_start": False,
+            "next_session_at": None,
+            "enter_session": True,
+        }
+
+    if is_near_window_start(now, start_hhmm, end_hhmm, grace_minutes=grace_minutes):
+        return {
+            "calendar_in_window": True,
+            "session_active": True,
+            "window_id": wid,
+            "session_window_id": wid,
+            "waiting_next_start": False,
+            "next_session_at": None,
+            "enter_session": True,
+        }
+
+    # 开盘已过才启用：等到次日 start
+    return {
+        "calendar_in_window": True,
+        "session_active": False,
+        "window_id": wid,
+        "session_window_id": session_window_id,
+        "waiting_next_start": True,
+        "next_session_at": nxt.isoformat(sep=" ", timespec="minutes"),
+        "enter_session": False,
+    }
 
 
 def default_config() -> DeclineRankAutoConfig:
@@ -207,10 +318,23 @@ async def get_status(db: AsyncSession) -> DeclineRankAutoStatus:
     state = await _load_state(db)
     now = now_beijing()
     in_win = False
+    waiting = False
+    next_session = None
     wid = None
     if config.enabled and config.account_id:
-        in_win = is_in_window(now, config.start_time, config.end_time)
-        wid = window_id_for(now, config.start_time, config.end_time)
+        auto_n = await count_auto_strategies(db, config.account_id)
+        resolved = resolve_session(
+            now,
+            config.start_time,
+            config.end_time,
+            session_window_id=state.get("session_window_id"),
+            has_auto_strategies=auto_n > 0,
+            grace_minutes=3,
+        )
+        in_win = bool(resolved["session_active"])
+        waiting = bool(resolved["waiting_next_start"])
+        next_session = resolved.get("next_session_at")
+        wid = resolved.get("window_id")
 
     next_refresh = None
     last_refresh = state.get("last_refresh_at")
@@ -221,6 +345,8 @@ async def get_status(db: AsyncSession) -> DeclineRankAutoStatus:
             next_refresh = nr.isoformat(sep=" ", timespec="seconds")
     elif in_win and not last_refresh:
         next_refresh = "立即"
+    elif waiting and next_session:
+        next_refresh = f"次日开盘 {next_session}"
 
     auto_count = await count_auto_strategies(db, config.account_id)
     stats = state.get("last_refresh_stats") if isinstance(state.get("last_refresh_stats"), dict) else {}
@@ -237,6 +363,8 @@ async def get_status(db: AsyncSession) -> DeclineRankAutoStatus:
     return DeclineRankAutoStatus(
         enabled=config.enabled,
         in_window=in_win,
+        waiting_next_start=waiting,
+        next_session_at=next_session,
         window_id=wid,
         last_refresh_at=last_refresh,
         next_refresh_at=next_refresh,
@@ -424,6 +552,7 @@ async def refresh_once(db: AsyncSession, config: Optional[DeclineRankAutoConfig]
     if err_parts:
         state["last_error"] = "; ".join(err_parts)
     state["active_window_id"] = window_id_for(now, config.start_time, config.end_time)
+    state["session_window_id"] = state["active_window_id"]
     await _save_state(db, state)
     return {"ok": True, "symbols": symbols, **create_stats}
 
@@ -441,14 +570,23 @@ async def tick() -> None:
                     return
 
                 now = now_beijing()
-                in_win = is_in_window(now, config.start_time, config.end_time)
-                wid = window_id_for(now, config.start_time, config.end_time)
                 state = await _load_state(db)
+                auto_n = await count_auto_strategies(db, config.account_id)
+                resolved = resolve_session(
+                    now,
+                    config.start_time,
+                    config.end_time,
+                    session_window_id=state.get("session_window_id"),
+                    has_auto_strategies=auto_n > 0,
+                    grace_minutes=3,
+                )
+                cal_in = bool(resolved["calendar_in_window"])
+                session_active = bool(resolved["session_active"])
+                wid = resolved["window_id"]
 
-                if not in_win:
-                    # 窗口结束清理不依赖总开关，避免总开关关闭导致自动策略残留
+                if not cal_in:
+                    # 窗口结束：清理并清空会话
                     cleaned = state.get("cleaned_for_window")
-                    auto_n = await count_auto_strategies(db, config.account_id)
                     target_clean_id = wid
                     if auto_n > 0 and cleaned != target_clean_id:
                         logger.info(
@@ -459,10 +597,10 @@ async def tick() -> None:
                         )
                         stats = await cleanup_auto_strategies(db, config.account_id)
                         state = await _load_state(db)
-                        # 仅在全部成功时标记已清理，失败则下次 tick 重试
                         if not stats.get("failed"):
                             state["cleaned_for_window"] = target_clean_id
                             state["current_symbols"] = []
+                            state["session_window_id"] = None
                             state["last_error"] = None
                         else:
                             state["last_error"] = (
@@ -470,13 +608,33 @@ async def tick() -> None:
                                 f"{';'.join(stats.get('errors') or [])}"
                             )
                         await _save_state(db, state)
+                    elif state.get("session_window_id"):
+                        state["session_window_id"] = None
+                        await _save_state(db, state)
                     return
 
-                # 建仓/刷新仍遵守总开关
+                # 日历在窗口内，但开盘已过且尚未进场 → 等待次日开盘
+                if not session_active:
+                    if state.get("waiting_note") != resolved.get("next_session_at"):
+                        state["waiting_note"] = resolved.get("next_session_at")
+                        logger.info(
+                            "decline_rank waiting next start account=%s next=%s (start already passed today)",
+                            config.account_id,
+                            resolved.get("next_session_at"),
+                        )
+                        await _save_state(db, state)
+                    return
+
+                # 正式会话中
+                if resolved.get("enter_session") and state.get("session_window_id") != wid:
+                    state["session_window_id"] = wid
+                    state["waiting_note"] = None
+                    await _save_state(db, state)
+                    state = await _load_state(db)
+
                 if not await _master_switch_on(db):
                     return
 
-                # Inside window: clear cleaned marker for this window so end can clean again
                 if state.get("cleaned_for_window") == wid:
                     state["cleaned_for_window"] = None
                     await _save_state(db, state)
@@ -521,6 +679,7 @@ async def pause_auto(*, cleanup: bool = True) -> dict:
             )
             state = await _load_state(db)
             state["current_symbols"] = []
+            state["session_window_id"] = None
             if not cleanup_stats.get("failed"):
                 state["last_error"] = None
                 state["cleaned_for_window"] = window_id_for(
@@ -531,6 +690,10 @@ async def pause_auto(*, cleanup: bool = True) -> dict:
                     f"暂停清理失败 {cleanup_stats['failed']}: "
                     f"{';'.join(cleanup_stats.get('errors') or [])}"
                 )
+            await _save_state(db, state)
+        else:
+            state = await _load_state(db)
+            state["session_window_id"] = None
             await _save_state(db, state)
         return {"enabled": False, "cleanup": cleanup, **cleanup_stats}
 

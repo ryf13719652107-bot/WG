@@ -261,13 +261,23 @@ export default function StrategyPage() {
                 }`}>
                   {autoStatus?.enabled ? '已启用' : '已暂停（残留仓位）'}
                 </span>
-                {autoStatus?.enabled && (
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    autoStatus.in_window ? 'bg-green-600/20 text-green-400' : 'bg-gray-700 text-gray-400'
-                  }`}>
-                    {autoStatus.in_window ? '运行窗口内' : '等待下一窗口'}
-                  </span>
-                )}
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  autoStatus?.enabled
+                    ? (autoStatus.in_window
+                      ? 'bg-green-600/20 text-green-400'
+                      : autoStatus.waiting_next_start
+                        ? 'bg-amber-600/20 text-amber-300'
+                        : 'bg-gray-700 text-gray-400')
+                    : 'bg-gray-700 text-gray-400'
+                }`}>
+                  {!autoStatus?.enabled
+                    ? '已暂停'
+                    : autoStatus.in_window
+                      ? '运行中（已开盘）'
+                      : autoStatus.waiting_next_start
+                        ? `等待开盘 ${autoStatus.next_session_at || ''}`.trim()
+                        : '等待中'}
+                </span>
                 <span className="text-xs px-2 py-0.5 rounded bg-cyan-600/10 text-cyan-400/90">
                   {autoStrategies.length} 币 · 运行 {autoRunning} · 停止 {autoStopped}
                 </span>
