@@ -120,6 +120,10 @@ class DeclineRankAutoConfig(BaseModel):
     end_time: str = Field(default="00:00", description="北京时间 HH:MM；可等于开始时间表示跨午夜至次日")
     refresh_interval_min: int = Field(default=15, ge=1, le=1440)
     top_n: int = Field(default=10, ge=1, le=100)
+    exclude_stock_contracts: bool = Field(
+        default=True,
+        description="拉榜时排除股票/TradFi 型 USDT 永续（如 HIMSUSDT、BEUSDT）",
+    )
     params: StrategyParamTemplateParams = Field(default_factory=StrategyParamTemplateParams)
 
     @field_validator("start_time", "end_time")

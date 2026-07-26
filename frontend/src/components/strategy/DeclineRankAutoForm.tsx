@@ -90,6 +90,7 @@ export default function DeclineRankAutoForm({ accounts, onCancel, onSaved }: Pro
       <p className="text-xs text-gray-500 leading-relaxed">
         每天在「开始时间」开盘拉取跌幅榜并建仓，到「结束时间」撤单平仓删除自动策略。
         若保存启用时当天开始时间已过（例如开始 03:00、现在 18:42），则等到次日开始时间再开盘，不会中途进场。
+        修改方向或绑定账户时会先清理已有自动策略，再按新配置建仓。
         另需顶栏总开关处于「运行中」。
       </p>
 
@@ -140,6 +141,15 @@ export default function DeclineRankAutoForm({ accounts, onCancel, onSaved }: Pro
               onChange={(e) => setCfg({ ...cfg, enabled: e.target.checked })}
             />
             启用跌幅榜自动策略
+          </label>
+
+          <label className="flex items-center gap-2 text-gray-300">
+            <input
+              type="checkbox"
+              checked={cfg.exclude_stock_contracts !== false}
+              onChange={(e) => setCfg({ ...cfg, exclude_stock_contracts: e.target.checked })}
+            />
+            过滤股票型合约（TradFi / 美股合成永续，如 HIMSUSDT、BEUSDT）
           </label>
 
           <div className="grid grid-cols-2 gap-3">

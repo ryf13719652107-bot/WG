@@ -7,6 +7,7 @@ from typing import Optional
 
 from .exchange_base import BaseExchangeService
 from .exchange_factory import get_public_exchange
+from .stock_perp import filter_stock_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,11 @@ async def fetch_top_losers(
     limit: int = 10,
     min_quote_volume: float = 0.0,
     use_cache: bool = True,
+    exclude_stock: bool = True,
 ) -> list[dict]:
     """Fetch USDT-M perpetual top-N 24h losers for binance|okx."""
     ex_id = (exchange or "binance").strip().lower()
-    cache_key = f"{ex_id}:{limit}:{min_quote_volume}"
+    cache_key = f"{ex_id}:{limit}:{min_quote_volume}:xs={int(bool(exclude_stock))}"
     now = time.monotonic()
     if use_cache and cache_key in _CACHE:
         ts, data = _CACHE[cache_key]
@@ -94,6 +96,13 @@ async def fetch_top_losers(
         raise RuntimeError(f"无法创建公开行情客户端: {ex_id}")
 
     perp_list = await pub.list_usdt_perp_symbols()
+    markets = list((getattr(pub.exchange, "markets", None) or {}).values())
+    if exclude_stock:
+        before = len(perp_list)
+        perp_list = filter_stock_symbols(perp_list, markets)
+        removed = before - len(perp_list)
+        if removed:
+            logger.info("top losers %s excluded %d stock-type perps", ex_id, removed)
     perp_set = set(perp_list)
     tickers = await pub.fetch_tickers()
     ranked = rank_tickers_to_losers(
@@ -106,9 +115,10 @@ async def fetch_top_losers(
         row["exchange"] = ex_id
     _CACHE[cache_key] = (now, ranked)
     logger.info(
-        "top losers %s limit=%d -> %s",
+        "top losers %s limit=%d exclude_stock=%s -> %s",
         ex_id,
         limit,
+        exclude_stock,
         [f"{r['symbol']}({r['price_change_pct']:.2f}%)" for r in ranked[:5]],
     )
     return list(ranked)

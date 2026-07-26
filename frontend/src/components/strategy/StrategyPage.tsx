@@ -494,8 +494,12 @@ export default function StrategyPage() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        {manualStrategies.map((s) => (
-          <div key={s.id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        {strategies.map((s) => {
+          const isAuto = s.source === 'decline_rank';
+          return (
+          <div key={s.id} className={`bg-gray-900 border rounded-lg p-4 ${
+            isAuto ? 'border-cyan-800/50' : 'border-gray-800'
+          }`}>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-white text-base">{s.symbol}</span>
@@ -504,6 +508,9 @@ export default function StrategyPage() {
                 }`}>
                   {s.direction === 'long' ? '做多' : '做空'}
                 </span>
+                {isAuto && (
+                  <span className="text-xs px-2 py-0.5 rounded bg-cyan-600/20 text-cyan-300">自动</span>
+                )}
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   s.status === 'running' ? 'bg-green-600/20 text-green-400' :
                   s.status === 'error' ? 'bg-red-600/20 text-red-400' :
@@ -538,12 +545,13 @@ export default function StrategyPage() {
               </button>
             </div>
           </div>
-        ))}
-        {manualStrategies.length === 0 && !showAutoCard && (
+          );
+        })}
+        {strategies.length === 0 && !showAutoCard && (
           <div className="col-span-full text-center text-gray-600 py-8">暂无策略</div>
         )}
-        {manualStrategies.length === 0 && showAutoCard && (
-          <div className="col-span-full text-center text-gray-600 py-4 text-sm">暂无手动策略</div>
+        {strategies.length === 0 && showAutoCard && (
+          <div className="col-span-full text-center text-gray-600 py-4 text-sm">暂无策略卡片（可在上方自动策略区管理）</div>
         )}
       </div>
     </div>

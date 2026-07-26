@@ -61,6 +61,45 @@ def test_rank_tickers_fallback_open_last():
     assert ranked[0]["price_change_pct"] == pytest.approx(-20.0)
 
 
+def test_filter_stock_symbols_excludes_known_and_market_tagged():
+    from app.services.stock_perp import filter_stock_symbols, is_stock_type_market, is_stock_type_symbol
+
+    assert is_stock_type_symbol("HIMSUSDT")
+    assert is_stock_type_symbol("BEUSDT")
+    assert not is_stock_type_symbol("BTCUSDT")
+
+    markets = [
+        {
+            "id": "XYZUSDT",
+            "symbol": "XYZ/USDT:USDT",
+            "active": True,
+            "swap": True,
+            "linear": True,
+            "quote": "USDT",
+            "settle": "USDT",
+            "info": {"underlyingType": "STOCK"},
+        },
+        {
+            "id": "BTCUSDT",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "swap": True,
+            "linear": True,
+            "quote": "USDT",
+            "settle": "USDT",
+            "info": {"underlyingType": "COIN"},
+        },
+    ]
+    assert is_stock_type_market(markets[0])
+    assert not is_stock_type_market(markets[1])
+
+    filtered = filter_stock_symbols(
+        ["BTCUSDT", "HIMSUSDT", "XYZUSDT", "ETHUSDT", "BEUSDT"],
+        markets,
+    )
+    assert filtered == ["BTCUSDT", "ETHUSDT"]
+
+
 @pytest.mark.parametrize(
     "now,start,end,expected",
     [

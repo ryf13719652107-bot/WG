@@ -22,6 +22,7 @@ from ..schemas.strategy import (
     StrategyParamTemplateParams,
 )
 from .market_rankings import fetch_top_losers
+from .stock_perp import is_stock_type_symbol
 from .strategy_lifecycle import (
     SOURCE_DECLINE_RANK,
     StrategyLifecycleError,
@@ -258,6 +259,36 @@ async def save_config(
                     f"{';'.join(stats.get('errors') or [])}"
                 )
             await _save_state(db, state)
+
+    # 换方向 / 换绑定时：清掉旧自动策略，避免残留方向仍占列表、新方向看起来「没进卡片」
+    direction_changed = prev.direction != config.direction
+    account_changed = (
+        prev.account_id is not None
+        and config.account_id is not None
+        and int(prev.account_id) != int(config.account_id)
+    )
+    if config.enabled and (direction_changed or account_changed):
+        aids: list[int] = []
+        if prev.account_id:
+            aids.append(int(prev.account_id))
+        if config.account_id and int(config.account_id) not in aids:
+            aids.append(int(config.account_id))
+        for aid in aids:
+            await cleanup_auto_strategies(
+                db, aid, close_reason="decline_rank_direction_change",
+            )
+        state = await _load_state(db)
+        state["current_symbols"] = []
+        state["last_refresh_at"] = None
+        state["session_window_id"] = None
+        await _save_state(db, state)
+        logger.info(
+            "decline_rank config change cleanup direction=%s->%s account=%s->%s",
+            prev.direction,
+            config.direction,
+            prev.account_id,
+            config.account_id,
+        )
     return config
 
 
@@ -414,6 +445,39 @@ async def cleanup_auto_strategies(
     return {"deleted": deleted, "failed": failed, "total": len(strategies), "errors": errors[:20]}
 
 
+async def cleanup_stock_auto_strategies(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    close_reason: str = "decline_rank_exclude_stock",
+) -> dict:
+    """Teardown decline_rank strategies whose symbols are stock-type contracts."""
+    result = await db.execute(
+        select(Strategy).where(
+            Strategy.account_id == account_id,
+            Strategy.source == SOURCE_DECLINE_RANK,
+        )
+    )
+    strategies = [s for s in result.scalars().all() if is_stock_type_symbol(s.symbol or "")]
+    deleted, failed = 0, 0
+    errors: list[str] = []
+    for s in strategies:
+        sid = s.id
+        sym = s.symbol
+        try:
+            await teardown_strategy(sid, db, close_reason=close_reason, require_exchange_if_open=False)
+            deleted += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"{sym}(id={sid}): {e}")
+            logger.exception("decline_rank cleanup stock strategy %d failed: %s", sid, e)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    return {"deleted": deleted, "failed": failed, "total": len(strategies), "errors": errors[:20]}
+
+
 async def _create_and_start_from_rank(
     db: AsyncSession,
     config: DeclineRankAutoConfig,
@@ -526,9 +590,24 @@ async def refresh_once(db: AsyncSession, config: Optional[DeclineRankAutoConfig]
         return {"ok": False, "reason": "account_missing"}
 
     exchange = (account.exchange or "binance").lower()
-    ranked = await fetch_top_losers(exchange, limit=config.top_n, use_cache=True)
+    exclude_stock = bool(getattr(config, "exclude_stock_contracts", True))
+    ranked = await fetch_top_losers(
+        exchange,
+        limit=config.top_n,
+        use_cache=True,
+        exclude_stock=exclude_stock,
+    )
     symbols = [r["symbol"] for r in ranked]
+    stock_cleanup = {"deleted": 0, "failed": 0, "total": 0}
+    if exclude_stock:
+        stock_cleanup = await cleanup_stock_auto_strategies(db, int(config.account_id))
     create_stats = await _create_and_start_from_rank(db, config, symbols)
+    if stock_cleanup.get("deleted") or stock_cleanup.get("failed"):
+        create_stats = {
+            **create_stats,
+            "stock_removed": int(stock_cleanup.get("deleted") or 0),
+            "stock_remove_failed": int(stock_cleanup.get("failed") or 0),
+        }
 
     state = await _load_state(db)
     now = now_beijing()

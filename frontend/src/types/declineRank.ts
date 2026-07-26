@@ -8,6 +8,8 @@ export interface DeclineRankAutoConfig {
   end_time: string;
   refresh_interval_min: number;
   top_n: number;
+  /** 拉榜时排除股票/TradFi 型合约（如 HIMSUSDT） */
+  exclude_stock_contracts: boolean;
   params: StrategyParamFields;
 }
 
@@ -50,5 +52,6 @@ export const defaultDeclineRankConfig = (): DeclineRankAutoConfig => ({
   end_time: '00:00',
   refresh_interval_min: 15,
   top_n: 10,
+  exclude_stock_contracts: true,
   params: defaultDeclineRankParams(),
 });
